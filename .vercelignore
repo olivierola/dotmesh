@@ -1,0 +1,12 @@
+supabase/
+apps/extension/
+packages/mcp-server/
+docs/
+*.docx
+DEPLOY_*.md
+SUPABASE_CLOUD_SETUP.md
+Mesh_*_Spec_*.md
+*.test.ts
+*.spec.ts
+e2e/
+.github/

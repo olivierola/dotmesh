@@ -1,0 +1,76 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  width: 340px;
+  min-height: 360px;
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
+  background: #0a0a0a;
+  color: #e5e5e5;
+  font-size: 13px;
+}
+
+.mesh-popup {
+  padding: 16px;
+}
+
+.mesh-popup h1 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.mesh-popup .stat {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-bottom: 1px solid #1f1f1f;
+}
+
+.mesh-popup button {
+  width: 100%;
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: #7c3aed;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mesh-popup button.secondary {
+  background: transparent;
+  border: 1px solid #2a2a2a;
+  color: #a3a3a3;
+}
+
+.mesh-popup .empty {
+  padding: 24px 0;
+  text-align: center;
+  color: #737373;
+}
+
+.mesh-popup .item {
+  padding: 8px 0;
+  border-bottom: 1px solid #1f1f1f;
+}
+
+.mesh-popup .item-meta {
+  font-size: 11px;
+  color: #737373;
+  margin-bottom: 2px;
+}
+
+.mesh-popup .item-text {
+  color: #d4d4d4;
+}

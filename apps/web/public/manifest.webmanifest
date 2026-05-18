@@ -1,0 +1,47 @@
+{
+  "name": "Mesh — Your AI memory",
+  "short_name": "Mesh",
+  "description": "The second brain that builds itself, and makes every AI agent yours.",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "orientation": "any",
+  "lang": "en",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Assistant",
+      "short_name": "Assistant",
+      "url": "/assistant",
+      "description": "Ask your memory anything"
+    },
+    {
+      "name": "Search",
+      "short_name": "Search",
+      "url": "/search",
+      "description": "Search your memories"
+    }
+  ]
+}

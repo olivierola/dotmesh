@@ -1,0 +1,51 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+.output/
+.wxt/
+build/
+.next/
+.turbo/
+
+# Env
+.env
+.env.local
+.env.*.local
+!.env.example
+supabase/.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Supabase
+supabase/.branches/
+supabase/.temp/
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# TS
+*.tsbuildinfo
+
+# Extension build artifacts
+*.crx
+*.pem
+*.zip
+
+# Tool results / local memory
+.claude/

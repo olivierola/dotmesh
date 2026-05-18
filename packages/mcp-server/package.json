@@ -1,0 +1,26 @@
+{
+  "name": "@mesh/mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server for Mesh — exposes context_push, context_pull, context_traverse tools",
+  "type": "module",
+  "bin": {
+    "mesh-mcp-server": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc --watch",
+    "lint": "echo 'no lint config yet'",
+    "typecheck": "tsc --noEmit",
+    "test": "echo 'no tests yet'",
+    "clean": "rm -rf dist *.tsbuildinfo node_modules"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.4"
+  }
+}

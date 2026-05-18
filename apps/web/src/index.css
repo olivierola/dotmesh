@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  /* ===================================================================
+   * Scrollbars — thin, dark, minimal.
+   *
+   * Three flavors:
+   *   - body / app shell:  6px, subtle, fades in on hover
+   *   - small panels:      4px (use .scroll-thin)
+   *   - hide entirely:     (use .scroll-none)
+   * =================================================================== */
+
+  /* Firefox */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(63 63 70 / 0.6) transparent; /* thumb · track */
+  }
+
+  /* Chrome / Edge / Safari */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(63 63 70 / 0.6); /* neutral-700/60 */
+    border-radius: 9999px;
+    transition: background 0.15s;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(82 82 91 / 0.85); /* neutral-600/85 */
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+@layer utilities {
+  .scroll-thin::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  .scroll-none {
+    scrollbar-width: none;
+  }
+  .scroll-none::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* ===================================================================
+   * Skeleton shimmer animation
+   * =================================================================== */
+  @keyframes mesh-shimmer {
+    0% {
+      background-position: -200% 0;
+    }
+    100% {
+      background-position: 200% 0;
+    }
+  }
+  .skeleton {
+    /* Discreet shimmer: stays close to neutral-900, barely-there highlight. */
+    background: linear-gradient(
+      90deg,
+      rgb(23 23 23) 0%,
+      rgb(34 34 34) 50%,
+      rgb(23 23 23) 100%
+    );
+    background-size: 200% 100%;
+    animation: mesh-shimmer 2.2s ease-in-out infinite;
+    border-radius: 6px;
+  }
+}

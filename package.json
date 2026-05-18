@@ -1,0 +1,38 @@
+{
+  "name": "mesh",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mesh — Shared Context Memory Platform (B2C)",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20.10.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\" --ignore-path .gitignore",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md}\" --ignore-path .gitignore",
+    "clean": "turbo run clean && rm -rf node_modules",
+    "supabase:start": "supabase start",
+    "supabase:stop": "supabase stop",
+    "supabase:reset": "supabase db reset",
+    "supabase:migrate": "supabase db push",
+    "supabase:functions:serve": "supabase functions serve --env-file ./supabase/.env.local",
+    "supabase:test:db": "supabase test db",
+    "test:edge": "deno test --allow-net --allow-env supabase/functions/_shared/",
+    "supabase:link": "supabase link",
+    "supabase:push": "supabase db push",
+    "functions:deploy": "node scripts/deploy-functions.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "prettier": "^3.3.3",
+    "prettier-plugin-tailwindcss": "^0.6.6",
+    "turbo": "^2.1.0",
+    "typescript": "^5.5.4"
+  }
+}

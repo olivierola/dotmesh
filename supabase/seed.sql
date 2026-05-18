@@ -1,0 +1,3 @@
+-- Optional local seed data for development.
+-- Run via: supabase db reset (auto-applies seed.sql)
+-- Leave empty for now; add fixtures when you have a test user.
