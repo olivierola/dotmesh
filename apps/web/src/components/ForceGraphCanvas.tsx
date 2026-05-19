@@ -1,25 +1,22 @@
 /**
  * Force-directed graph canvas backed by react-force-graph-2d.
  *
- * Replaces the Cytoscape canvas: nodes float continuously thanks to a live
- * d3-force simulation (much more "second-brain"-feeling than Cytoscape's
- * fcose snapshot layout).
+ * Wraps the bare ForceGraph2D and adds:
+ *   - automatic container sizing,
+ *   - rigid hub group-drag (members move with the dragged hub),
+ *   - lineage dimming (nodes & links not in keep set drawn faded),
+ *   - selection ring, type-aware node rendering.
  *
- * Behaviour:
- *   - drag a leaf node → it follows the cursor; connected neighbours drift
- *     toward it via the simulation's link force,
- *   - drag a hub → the hub's members are also dragged rigidly with the
- *     same delta (group drag, like before),
- *   - click a node → onSelect(node) bubbles up so the page can show the
- *     side panel,
- *   - lineageKeep restricts visibility to a subset of node ids,
- *   - colourMode / nodeColor are computed by the page and passed in.
+ * Kept deliberately small so the simulation defaults of d3-force kick in
+ * and we don't trip over edge cases (e.g. all nodes stuck at the centre).
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ForceGraph2D from 'react-force-graph-2d';
 import type { MockNode, MockEdge } from '@/lib/mock';
 
+// react-force-graph's TS typings disagree with our richer node shape;
+// using `any` at the boundary keeps the runtime intact without leaking.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const FG: any = ForceGraph2D;
 
@@ -31,7 +28,6 @@ export interface CanvasNode {
   isHub: boolean;
   shape: 'circle' | 'hex' | 'square' | 'triangle';
   raw?: MockNode;
-  // d3-force will mutate these at runtime:
   x?: number;
   y?: number;
   fx?: number;
@@ -52,7 +48,7 @@ export interface CanvasLink {
 export interface ForceGraphCanvasProps {
   nodes: CanvasNode[];
   links: CanvasLink[];
-  /** Node ids to keep visible (others are dimmed). null = show all. */
+  /** Node ids to keep visible. null = show all. */
   lineageKeep?: Set<string> | null;
   /** Map hubId → memberIds for rigid group-drag. */
   membersByHub?: Map<string, string[]>;
@@ -65,18 +61,18 @@ function nodeRadius(n: CanvasNode): number {
   return n.isHub ? 14 + Math.min(n.size, 30) * 0.6 : 5 + Math.log(n.size + 1) * 1.2;
 }
 
-function drawShape(
+function drawNode(
   ctx: CanvasRenderingContext2D,
   n: CanvasNode,
   r: number,
   dimmed: boolean,
 ): void {
+  const x = n.x ?? 0;
+  const y = n.y ?? 0;
   ctx.beginPath();
   ctx.fillStyle = dimmed ? n.color + '33' : n.color;
   ctx.strokeStyle = dimmed ? '#0a0a0a55' : '#0a0a0a';
   ctx.lineWidth = n.isHub ? 2 : 1.5;
-  const x = n.x ?? 0;
-  const y = n.y ?? 0;
   if (n.shape === 'hex') {
     for (let i = 0; i < 6; i++) {
       const a = (Math.PI / 3) * i - Math.PI / 6;
@@ -110,176 +106,171 @@ export default function ForceGraphCanvas({
   selectedId,
 }: ForceGraphCanvasProps) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ref = useRef<any>(null);
+  const fgRef = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const [size, setSize] = useState({ w: 800, h: 600 });
+  const [size, setSize] = useState({ w: 0, h: 0 });
   const dragSeed = useRef<{ id: string; x: number; y: number } | null>(null);
 
-  // Track container size for the canvas
+  // Measure the container so the canvas matches it. We start at 0,0 so
+  // the canvas stays unmounted until we know its real size — prevents the
+  // simulation from initialising at the wrong aspect ratio.
   useEffect(() => {
     const update = () => {
       const r = containerRef.current?.getBoundingClientRect();
-      if (r) setSize({ w: r.width, h: r.height });
+      if (r && (r.width !== size.w || r.height !== size.h)) {
+        setSize({ w: r.width, h: r.height });
+      }
     };
     update();
     const ro = new ResizeObserver(update);
     if (containerRef.current) ro.observe(containerRef.current);
     return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Configure simulation forces once we have the instance.
-  useEffect(() => {
-    const fg = ref.current;
-    if (!fg) return;
-    // Slightly stronger spring + a bit of charge for breathing room
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const linkForce: any = fg.d3Force('link');
-    linkForce?.distance(60).strength(0.5);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const charge: any = fg.d3Force('charge');
-    charge?.strength(-180);
-  }, [nodes.length, links.length]);
-
-  // Data the canvas will read. We pass plain arrays — react-force-graph
-  // will mutate them with x/y/vx/vy.
+  // Pass the exact arrays react-force-graph mutates. We deliberately do
+  // NOT recreate this object on every render (which would reset positions),
+  // and we accept the small staleness because the parent already memoises
+  // nodes/links per render.
   const graphData = useMemo(() => ({ nodes, links }), [nodes, links]);
 
+  // Tune forces once the instance is ready.
+  useEffect(() => {
+    const fg = fgRef.current;
+    if (!fg) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const link: any = fg.d3Force('link');
+    link?.distance(50).strength(0.4);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const charge: any = fg.d3Force('charge');
+    charge?.strength(-160);
+    // Reheat so the new forces actually apply.
+    fg.d3ReheatSimulation?.();
+  }, [size.w, size.h]);
+
+  const ready = size.w > 0 && size.h > 0;
+
   return (
-    <div ref={containerRef} className="relative h-full w-full bg-neutral-950">
-      <FG
-        ref={ref}
-        width={size.w}
-        height={size.h}
-        graphData={graphData}
-        backgroundColor="#0a0a0a"
-        cooldownTicks={120}
-        d3VelocityDecay={0.25}
-        nodeRelSize={1}
-        nodeId="id"
-        linkSource="source"
-        linkTarget="target"
-        enableNodeDrag={true}
-        onNodeDragStart={(node: unknown) => {
-          dragSeed.current = {
-            id: (node as CanvasNode).id,
-            x: (node as CanvasNode).x ?? 0,
-            y: (node as CanvasNode).y ?? 0,
-          };
-        }}
-        onNodeDrag={(node: unknown) => {
-          const seed = dragSeed.current;
-          const n = node as CanvasNode;
-          if (!seed || seed.id !== n.id) return;
-          if (!n.isHub) return; // only hubs do rigid group-drag
-          const dx = (n.x ?? 0) - seed.x;
-          const dy = (n.y ?? 0) - seed.y;
-          const members = membersByHub?.get(n.id) ?? [];
-          if (members.length === 0) return;
-          // Translate every member by (dx, dy) once relative to the seed
-          // position, so the cluster keeps its internal shape.
-          for (const mid of members) {
-            const m = graphData.nodes.find((x) => x.id === mid);
-            if (!m) continue;
-            // Pin the member at seed.x + dx, seed.y + dy relative to their
-            // original offset stored on the node itself the first time we
-            // see them in this drag session.
-            // We store the original offset on the node directly.
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const o = m as any;
-            if (o.__dragOffsetX == null) {
-              o.__dragOffsetX = (o.x ?? 0) - seed.x;
-              o.__dragOffsetY = (o.y ?? 0) - seed.y;
-            }
-            o.fx = seed.x + dx + o.__dragOffsetX;
-            o.fy = seed.y + dy + o.__dragOffsetY;
-          }
-        }}
-        onNodeDragEnd={(node: unknown) => {
-          const n = node as CanvasNode;
-          if (n.isHub) {
+    <div ref={containerRef} className="absolute inset-0 bg-neutral-950">
+      {ready && (
+        <FG
+          ref={fgRef}
+          width={size.w}
+          height={size.h}
+          graphData={graphData}
+          backgroundColor="#0a0a0a"
+          cooldownTicks={300}
+          warmupTicks={50}
+          d3VelocityDecay={0.3}
+          nodeRelSize={1}
+          enableNodeDrag={true}
+          enablePanInteraction={true}
+          enableZoomInteraction={true}
+          onNodeDragStart={(node: unknown) => {
+            const n = node as CanvasNode;
+            dragSeed.current = { id: n.id, x: n.x ?? 0, y: n.y ?? 0 };
+          }}
+          onNodeDrag={(node: unknown) => {
+            const seed = dragSeed.current;
+            const n = node as CanvasNode;
+            if (!seed || seed.id !== n.id) return;
+            if (!n.isHub) return;
+            const dx = (n.x ?? 0) - seed.x;
+            const dy = (n.y ?? 0) - seed.y;
             const members = membersByHub?.get(n.id) ?? [];
             for (const mid of members) {
-              const m = graphData.nodes.find((x) => x.id === mid);
+              const m = nodes.find((x) => x.id === mid);
               if (!m) continue;
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               const o = m as any;
-              delete o.fx;
-              delete o.fy;
-              delete o.__dragOffsetX;
-              delete o.__dragOffsetY;
+              if (o.__dragOffsetX == null) {
+                o.__dragOffsetX = (o.x ?? 0) - seed.x;
+                o.__dragOffsetY = (o.y ?? 0) - seed.y;
+              }
+              o.fx = seed.x + dx + o.__dragOffsetX;
+              o.fy = seed.y + dy + o.__dragOffsetY;
             }
+          }}
+          onNodeDragEnd={(node: unknown) => {
+            const n = node as CanvasNode;
+            if (n.isHub) {
+              const members = membersByHub?.get(n.id) ?? [];
+              for (const mid of members) {
+                const m = nodes.find((x) => x.id === mid);
+                if (!m) continue;
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const o = m as any;
+                delete o.fx;
+                delete o.fy;
+                delete o.__dragOffsetX;
+                delete o.__dragOffsetY;
+              }
+            }
+            dragSeed.current = null;
+          }}
+          onNodeClick={(node: unknown) => {
+            const n = node as CanvasNode;
+            onSelect?.(n);
+            fgRef.current?.centerAt?.(n.x, n.y, 600);
+          }}
+          onBackgroundClick={() => onBackgroundClick?.()}
+          nodeCanvasObject={(node: unknown, ctx: CanvasRenderingContext2D, scale: number) => {
+            const n = node as CanvasNode;
+            const dimmed = lineageKeep ? !lineageKeep.has(n.id) : false;
+            const r = nodeRadius(n);
+            drawNode(ctx, n, r, dimmed);
+            if (selectedId === n.id) {
+              ctx.beginPath();
+              ctx.strokeStyle = '#f5b301';
+              ctx.lineWidth = 2;
+              ctx.arc(n.x ?? 0, n.y ?? 0, r + 4, 0, Math.PI * 2);
+              ctx.stroke();
+            }
+            if (!dimmed && (scale > 1.2 || n.isHub)) {
+              const fontSize = n.isHub ? 12 / scale : 8 / scale;
+              ctx.font = `${n.isHub ? '600' : '400'} ${fontSize}px Inter, system-ui, sans-serif`;
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'top';
+              ctx.fillStyle = n.isHub ? '#fde68a' : '#e5e5e5';
+              const label = n.label.length > 28 ? n.label.slice(0, 26) + '…' : n.label;
+              ctx.fillText(label, n.x ?? 0, (n.y ?? 0) + r + 3);
+            }
+          }}
+          // We use the default link rendering for crisp lines + arrows but
+          // colour them per relation type via linkColor / linkWidth so the
+          // basic line drawing remains performant even with thousands of
+          // edges. (linkCanvasObject would force a full repaint per link.)
+          linkColor={(link: unknown) => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const l = link as any;
+            const srcId = typeof l.source === 'object' && l.source
+              ? (l.source as CanvasNode).id
+              : (l.source as string);
+            const tgtId = typeof l.target === 'object' && l.target
+              ? (l.target as CanvasNode).id
+              : (l.target as string);
+            const dim = lineageKeep
+              ? !lineageKeep.has(srcId) || !lineageKeep.has(tgtId)
+              : false;
+            return dim ? (l.color as string) + '22' : (l.color as string) + 'cc';
+          }}
+          linkWidth={(link: unknown) => (link as CanvasLink).width}
+          linkDirectionalArrowLength={(link: unknown) => {
+            const l = link as CanvasLink;
+            return l.isHubEdge || l.relation === 'same_session' ? 0 : 3;
+          }}
+          linkDirectionalArrowRelPos={1}
+          linkDirectionalArrowColor={(link: unknown) =>
+            (link as CanvasLink).color
           }
-          dragSeed.current = null;
-        }}
-        onNodeClick={(n: unknown) => {
-          const cn = n as CanvasNode;
-          onSelect?.(cn);
-          // Center the camera on the clicked node
-          ref.current?.centerAt(cn.x, cn.y, 600);
-        }}
-        onBackgroundClick={() => onBackgroundClick?.()}
-        nodeCanvasObject={(node: unknown, ctx: CanvasRenderingContext2D, scale: number) => {
-          const n = node as CanvasNode;
-          const dimmed = lineageKeep ? !lineageKeep.has(n.id) : false;
-          const r = nodeRadius(n);
-          drawShape(ctx, n, r, dimmed);
-          // Selection ring
-          if (selectedId === n.id) {
-            ctx.beginPath();
-            ctx.strokeStyle = '#f5b301';
-            ctx.lineWidth = 2;
-            ctx.arc(n.x ?? 0, n.y ?? 0, r + 4, 0, Math.PI * 2);
-            ctx.stroke();
-          }
-          // Label only when not dimmed AND scale is big enough OR is a hub
-          if (!dimmed && (scale > 1.2 || n.isHub)) {
-            const fontSize = n.isHub ? 13 / scale : 9 / scale;
-            ctx.font = `${n.isHub ? '600' : '400'} ${fontSize}px Inter, system-ui, sans-serif`;
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'top';
-            ctx.fillStyle = n.isHub ? '#fde68a' : '#e5e5e5';
-            const label = n.label.length > 28 ? n.label.slice(0, 26) + '…' : n.label;
-            ctx.fillText(label, n.x ?? 0, (n.y ?? 0) + r + 3);
-          }
-        }}
-        linkCanvasObject={(link: unknown, ctx: CanvasRenderingContext2D) => {
-          // d3-force mutates `source` / `target` from string ids into the
-          // resolved node objects after the first simulation tick.
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const l = link as any;
-          const src = l.source && typeof l.source === 'object' ? (l.source as CanvasNode) : null;
-          const tgt = l.target && typeof l.target === 'object' ? (l.target as CanvasNode) : null;
-          if (!src || !tgt) return;
-          const dimmedS = lineageKeep ? !lineageKeep.has(src.id) : false;
-          const dimmedT = lineageKeep ? !lineageKeep.has(tgt.id) : false;
-          const dim = dimmedS || dimmedT;
-          ctx.beginPath();
-          ctx.strokeStyle = dim ? l.color + '22' : l.color + 'cc';
-          ctx.lineWidth = l.width;
-          if (l.style === 'dashed') ctx.setLineDash([4, 3]);
-          else if (l.style === 'dotted') ctx.setLineDash([1, 4]);
-          else ctx.setLineDash([]);
-          ctx.moveTo(src.x ?? 0, src.y ?? 0);
-          ctx.lineTo(tgt.x ?? 0, tgt.y ?? 0);
-          ctx.stroke();
-          ctx.setLineDash([]);
-        }}
-        linkDirectionalArrowLength={(link: unknown) => {
-          const l = link as unknown as CanvasLink;
-          return l.isHubEdge || l.relation === 'same_session' ? 0 : 3;
-        }}
-        linkDirectionalArrowRelPos={1}
-        linkDirectionalArrowColor={(link: unknown) =>
-          (link as unknown as CanvasLink).color
-        }
-      />
+        />
+      )}
     </div>
   );
 }
 
 /**
- * Convert MockNode/MockEdge into the canvas shape, applying the per-mode
- * colour function provided by the page.
+ * Convert MockNode/MockEdge into the canvas shape.
  */
 export function buildCanvasData(opts: {
   nodes: MockNode[];
@@ -297,7 +288,6 @@ export function buildCanvasData(opts: {
   const membersByHub = new Map<string, string[]>();
   const nodeIds = new Set(opts.nodes.map((n) => n.id));
 
-  // Hub nodes + member edges
   for (const [key, members] of opts.hubMembers) {
     if (members.length === 0) continue;
     const hubId = `hub:${key}`;
