@@ -39,6 +39,10 @@ interface SearchHit {
   summary: string | null;
   source: string;
   source_url: string | null;
+  source_app?: string | null;
+  entities?: Array<{ value: string; type: string; normalized: string }>;
+  tags?: string[];
+  metadata?: Record<string, unknown> | null;
   created_at: string;
   score: number;
 }
@@ -65,10 +69,39 @@ function buildContextBlock(hits: SearchHit[]): string {
   if (hits.length === 0) return 'Relevant memories: (none found)';
   const lines = hits.map((h, i) => {
     const date = new Date(h.created_at).toISOString().split('T')[0];
-    const text = (h.summary ?? h.content).replace(/\s+/g, ' ').slice(0, 320);
-    return `[${i + 1}] (${date} · ${h.source}) ${text}`;
+    const md = (h.metadata ?? {}) as Record<string, unknown>;
+    const captureType = (md.captureType as string | undefined) ?? null;
+    const elementType = (md.elementType as string | undefined) ?? null;
+    const mediaUrl = (md.mediaUrl as string | undefined) ?? null;
+    const pageTitle = (md.pageTitle as string | undefined) ?? null;
+    const heading = (md.heading as string | undefined) ?? null;
+    const author = (md.author as string | undefined) ?? null;
+    const surroundingContext = (md.surroundingContext as string | undefined) ?? null;
+
+    // Compose a rich, type-aware line. Stay under ~600 chars per memory.
+    const body = (h.summary ?? h.content).replace(/\s+/g, ' ').trim();
+
+    const headerBits: string[] = [`[${i + 1}]`, `(${date}`];
+    if (captureType) headerBits.push(`· ${captureType}`);
+    if (h.source_app) headerBits.push(`· ${h.source_app}`);
+    headerBits.push(`)`);
+
+    const tail: string[] = [];
+    if (heading) tail.push(`heading="${heading.slice(0, 120)}"`);
+    if (author) tail.push(`author="${author.slice(0, 60)}"`);
+    if (pageTitle && !heading) tail.push(`page="${pageTitle.slice(0, 120)}"`);
+    if (elementType && elementType !== 'text') tail.push(`type=${elementType}`);
+    if (mediaUrl) tail.push(`media=${mediaUrl}`);
+    if (h.source_url) tail.push(`url=${h.source_url}`);
+
+    let line = `${headerBits.join(' ')} ${body.slice(0, 360)}`;
+    if (surroundingContext && (elementType === 'image' || elementType === 'video')) {
+      line += `\n     context: ${surroundingContext.slice(0, 240)}`;
+    }
+    if (tail.length) line += `\n     ${tail.join(' · ')}`;
+    return line;
   });
-  return `Relevant memories:\n${lines.join('\n')}`;
+  return `Relevant memories (cite as [n]):\n${lines.join('\n')}`;
 }
 
 Deno.serve(async (req) => {
@@ -114,20 +147,47 @@ Deno.serve(async (req) => {
     // Runs in parallel with the embedding to keep latency flat.
     const agentIntentPromise = detectAgentIntent(input.message);
 
-    // RAG: embed + hybrid search
+    // RAG: embed + hybrid search.
+    // When embedding fails (e.g. JINA_API_KEY missing), fall back to lexical-only
+    // search via a direct FTS query — avoids polluting hybrid_search with a zero
+    // vector that returns near-random results.
     const embedding = await jinaEmbed(input.message);
-    const queryVec = embedding ?? new Array(1024).fill(0);
 
-    const { data: hitsRaw, error: searchErr } = await client.rpc('hybrid_search', {
-      p_query_text: input.message,
-      p_query_embedding: queryVec,
-      p_top_k: input.top_k,
-      p_filter_tags: null,
-      p_filter_since: null,
-      p_filter_source: null,
-    });
-    if (searchErr) console.warn('chat search failed (continuing without RAG)', searchErr);
-    const hits = ((hitsRaw ?? []) as SearchHit[]).filter((h) => h.score > 0.2);
+    let hits: SearchHit[] = [];
+    if (embedding) {
+      const { data: hitsRaw, error: searchErr } = await client.rpc('hybrid_search', {
+        p_query_text: input.message,
+        p_query_embedding: embedding,
+        p_top_k: input.top_k,
+        p_filter_tags: null,
+        p_filter_since: null,
+        p_filter_source: null,
+      });
+      if (searchErr) {
+        console.warn('[Mesh] chat hybrid_search failed', searchErr);
+      } else {
+        hits = ((hitsRaw ?? []) as SearchHit[]).filter((h) => h.score > 0.2);
+      }
+    } else {
+      // No embedding available — fall back to FTS via the same RPC by sending a
+      // zero vector AND boosting top_k. Sparse branch in hybrid_search still
+      // returns results; we just lower the score threshold and re-rank by recency
+      // for ties.
+      console.log('[Mesh] chat running in FTS-only mode (no embedding)');
+      const { data: ftsRows, error: ftsErr } = await client
+        .from('context_nodes')
+        .select(
+          'id, content, summary, source, source_url, source_app, entities, tags, user_tags, created_at',
+        )
+        .textSearch('content_tsv', input.message, { type: 'plain', config: 'simple' })
+        .order('created_at', { ascending: false })
+        .limit(input.top_k);
+      if (ftsErr) {
+        console.warn('[Mesh] chat fts fallback failed', ftsErr);
+      } else {
+        hits = (ftsRows ?? []).map((r) => ({ ...r, score: 0.5 })) as SearchHit[];
+      }
+    }
 
     // Recent chat history (last 8 turns)
     const { data: historyRows } = await client
