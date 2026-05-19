@@ -17,9 +17,6 @@ import InsightsPage from '@/pages/Insights';
 import DashboardPage from '@/pages/Dashboard';
 import AssistantPage from '@/pages/Assistant';
 import SlackChannelsPage from '@/pages/SlackChannels';
-import WebhooksPage from '@/pages/Webhooks';
-import EmbedSettingsPage from '@/pages/EmbedSettings';
-import EmbedAskPage from '@/pages/EmbedAsk';
 import ExtensionBridgePage from '@/pages/ExtensionBridge';
 import CollectionsPage from '@/pages/Collections';
 import AppShell from '@/components/AppShell';
@@ -156,12 +153,7 @@ export default function App() {
       <Route path="/rules" element={<Shell><RulesPage /></Shell>} />
       <Route path="/connectors" element={<Shell><ConnectorsPage /></Shell>} />
       <Route path="/connectors/slack/channels" element={<Shell><SlackChannelsPage /></Shell>} />
-      <Route path="/webhooks" element={<Shell><WebhooksPage /></Shell>} />
-      <Route path="/embed" element={<Shell><EmbedSettingsPage /></Shell>} />
       <Route path="/settings" element={<Shell><SettingsPage /></Shell>} />
-
-      {/* Public embed widget — no shell, no auth */}
-      <Route path="/embed/ask" element={<EmbedAskPage />} />
 
       {/* Bridge page for the browser extension to fetch the current session */}
       <Route path="/auth/extension-bridge" element={<ExtensionBridgePage />} />
