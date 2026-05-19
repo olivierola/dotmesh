@@ -7,7 +7,7 @@ import cytoscape, {
   type NodeSingular,
 } from 'cytoscape';
 import fcose from 'cytoscape-fcose';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format, formatDistanceToNow } from 'date-fns';
 import { api, type GraphCollection } from '@/lib/api-client';
 import type { MockNode, MockEdge } from '@/lib/mock';
@@ -36,6 +36,21 @@ const TYPE_COLORS: Record<string, string> = {
   quote:  '#facc15', // yellow
   page:   '#34d399', // green
   action: '#e879f9', // magenta
+};
+
+const RELATION_COLOR: Record<string, string> = {
+  belongs_to_page: '#a78bfa',
+  navigated_from: '#fb923c',
+  same_session: '#52525b',
+  mentions: '#22d3ee',
+  extends: '#84cc16',
+  cites: '#facc15',
+  contradicts: '#f87171',
+  inferred: '#737373',
+  supersedes: '#34d399',
+  explicit: '#e5e5e5',
+  temporal: '#52525b',
+  user_linked: '#f5b301',
 };
 
 const TYPE_LABELS: Record<string, string> = {
@@ -178,6 +193,21 @@ export default function GraphPage() {
   const cyRef = useRef<Core | null>(null);
   const [selected, setSelected] = useState<MockNode | null>(null);
   const [colorMode, setColorMode] = useState<ColorMode>('type');
+  const [lineageFocus, setLineageFocus] = useState<string | null>(null);
+  const qc = useQueryClient();
+
+  const backfill = useMutation({
+    mutationFn: () => api.backfillHierarchy({ limit: 200 }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ['graph'] });
+      window.alert(
+        `Backfill: scanned ${r.scanned} memories — linked ${r.pages_linked} to a page, ` +
+          `${r.nav_linked} navigation parents, ${r.sessions_linked} same-session links.` +
+          (r.done ? '' : ' Run again to continue.'),
+      );
+    },
+    onError: (e) => window.alert(`Backfill failed: ${(e as Error).message}`),
+  });
 
   const { data, isLoading } = useQuery({
     queryKey: ['graph'],
@@ -189,6 +219,121 @@ export default function GraphPage() {
     for (const c of data?.collections ?? []) m.set(c.id, c);
     return m;
   }, [data?.collections]);
+
+  const nodeById = useMemo(() => {
+    const m = new Map<string, MockNode>();
+    for (const n of data?.nodes ?? []) m.set(n.id, n);
+    return m;
+  }, [data?.nodes]);
+
+  /** Resolve clickable links (parents, children, related) for the selected node. */
+  const selectedLinks: NodeLink[] = useMemo(() => {
+    if (!selected || !data) return [];
+    const PARENT_RELS = new Set(['belongs_to_page', 'navigated_from']);
+    const SELF_PARENT_OUT_RELS = new Set<string>([]); // we are FROM page → child
+    const links: NodeLink[] = [];
+    for (const e of data.edges) {
+      const isFrom = e.from_node === selected.id;
+      const isTo = e.to_node === selected.id;
+      if (!isFrom && !isTo) continue;
+      const otherId = isFrom ? e.to_node : e.from_node;
+      const other = nodeById.get(otherId);
+      if (!other) continue;
+      let direction: NodeLink['direction'];
+      if (PARENT_RELS.has(e.relation_type)) {
+        // edge direction: from_node = parent → to_node = child
+        direction = isTo ? 'parent' : 'child';
+      } else if (SELF_PARENT_OUT_RELS.has(e.relation_type)) {
+        direction = 'child';
+      } else if (e.relation_type === 'same_session') {
+        direction = 'related';
+      } else {
+        // mentions/extends/cites/contradicts/inferred — semantic peer
+        direction = 'related';
+      }
+      links.push({ edgeId: e.id, direction, relation: e.relation_type, node: other });
+    }
+    // Order: parents first, then children, then related; within each group by
+    // relation type so the visual grouping stays predictable.
+    const order: Record<NodeLink['direction'], number> = {
+      parent: 0,
+      child: 1,
+      related: 2,
+    };
+    links.sort((a, b) => {
+      if (order[a.direction] !== order[b.direction]) {
+        return order[a.direction] - order[b.direction];
+      }
+      return a.relation.localeCompare(b.relation);
+    });
+    return links;
+  }, [selected, data, nodeById]);
+
+  // ----- Lineage focus: hide everything that isn't an ancestor or
+  // descendant of the focused node, walking belongs_to_page +
+  // navigated_from edges in both directions.
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    if (!lineageFocus || !data) {
+      cy.elements().removeClass('lineage-dim');
+      cy.elements().style('display', 'element');
+      return;
+    }
+    const HIER_RELS = new Set(['belongs_to_page', 'navigated_from']);
+    const adjFrom = new Map<string, string[]>(); // parent → children
+    const adjTo = new Map<string, string[]>();   // child → parents
+    for (const e of data.edges) {
+      if (!HIER_RELS.has(e.relation_type)) continue;
+      (adjFrom.get(e.from_node) ?? adjFrom.set(e.from_node, []).get(e.from_node)!).push(e.to_node);
+      (adjTo.get(e.to_node) ?? adjTo.set(e.to_node, []).get(e.to_node)!).push(e.from_node);
+    }
+    const keep = new Set<string>([lineageFocus]);
+    // BFS ancestors
+    let frontier = [lineageFocus];
+    while (frontier.length) {
+      const next: string[] = [];
+      for (const id of frontier) {
+        for (const p of adjTo.get(id) ?? []) {
+          if (!keep.has(p)) { keep.add(p); next.push(p); }
+        }
+      }
+      frontier = next;
+    }
+    // BFS descendants
+    frontier = [lineageFocus];
+    while (frontier.length) {
+      const next: string[] = [];
+      for (const id of frontier) {
+        for (const c of adjFrom.get(id) ?? []) {
+          if (!keep.has(c)) { keep.add(c); next.push(c); }
+        }
+      }
+      frontier = next;
+    }
+    cy.batch(() => {
+      cy.nodes().forEach((n: NodeSingular) => {
+        if (n.data('isHub')) {
+          // Hide hubs whose descendants are all out of the lineage set.
+          const anyKept =
+            n.descendants().filter((d: NodeSingular) => keep.has(d.id())).length > 0;
+          n.style('display', anyKept ? 'element' : 'none');
+          return;
+        }
+        n.style('display', keep.has(n.id()) ? 'element' : 'none');
+      });
+      cy.edges().forEach((e: EdgeSingular) => {
+        const s = e.source().id();
+        const t = e.target().id();
+        e.style('display', keep.has(s) && keep.has(t) ? 'element' : 'none');
+      });
+    });
+    // Fit to what's left
+    const visible = cy.elements(':visible');
+    if (visible.length > 0) {
+      cy.animate({ fit: { eles: visible, padding: 80 }, duration: 380 });
+    }
+  }, [lineageFocus, data]);
 
   // ----- Live recolor when the user flips colorMode -----
   // We update `color` data on each node without rebuilding the whole graph
@@ -562,6 +707,24 @@ export default function GraphPage() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={() => {
+                if (
+                  window.confirm(
+                    'Walk your captured memories and (re)build hierarchy edges? ' +
+                      'Creates page parents, navigated_from links and same-session links. ' +
+                      'Cheap, idempotent, no LLM cost.',
+                  )
+                ) {
+                  backfill.mutate();
+                }
+              }}
+              disabled={backfill.isPending}
+              className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+              title="Build hierarchy edges for nodes captured before this feature shipped"
+            >
+              {backfill.isPending ? 'Linking…' : '🕸 Backfill links'}
+            </button>
             <div className="flex items-center gap-1 rounded-md border border-neutral-800 bg-neutral-900 p-0.5 text-xs">
               <span className="px-2 text-neutral-500">Color by</span>
               {(['type', 'collection', 'site'] as ColorMode[]).map((m) => (
@@ -618,8 +781,33 @@ export default function GraphPage() {
             collections={(selected.collection_ids ?? [])
               .map((id) => collectionById.get(id))
               .filter((c): c is GraphCollection => !!c)}
+            links={selectedLinks}
             onClose={() => setSelected(null)}
+            onNavigate={(id) => {
+              const n = nodeById.get(id);
+              if (n) setSelected(n);
+              const cy = cyRef.current;
+              if (cy) {
+                const el = cy.getElementById(id);
+                if (el && el.length > 0) {
+                  cy.animate({ fit: { eles: el, padding: 180 }, duration: 380 });
+                  el.flashClass?.('flash', 600);
+                }
+              }
+            }}
+            onFocusLineage={(id) => setLineageFocus(id)}
           />
+        )}
+        {lineageFocus && (
+          <div className="pointer-events-auto absolute right-4 top-4 z-20 flex items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950/95 px-3 py-1.5 text-xs text-neutral-300 backdrop-blur">
+            <span>Focused on lineage</span>
+            <button
+              onClick={() => setLineageFocus(null)}
+              className="rounded bg-neutral-800 px-2 py-0.5 hover:bg-neutral-700"
+            >
+              Clear
+            </button>
+          </div>
         )}
 
         {data && (
@@ -728,14 +916,27 @@ function Legend({
   );
 }
 
+interface NodeLink {
+  edgeId: string;
+  direction: 'parent' | 'child' | 'related';
+  relation: MockEdge['relation_type'];
+  node: MockNode;
+}
+
 function SidePanel({
   node,
   collections,
+  links,
   onClose,
+  onNavigate,
+  onFocusLineage,
 }: {
   node: MockNode;
   collections: GraphCollection[];
+  links: NodeLink[];
   onClose: () => void;
+  onNavigate: (id: string) => void;
+  onFocusLineage: (id: string) => void;
 }) {
   const extracted = node.metadata?.extracted;
   const nodeType = effectiveNodeType(node);
@@ -1028,6 +1229,53 @@ function SidePanel({
                     {a.value ? `${a.value} · ` : ''}
                     {a.at ? formatDistanceToNow(new Date(a.at), { addSuffix: true }) : ''}
                   </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Connections */}
+        {links.length > 0 && (
+          <div className="mb-4">
+            <div className="mb-2 flex items-center justify-between">
+              <div className="text-[10px] uppercase tracking-widest text-neutral-500">
+                Connections ({links.length})
+              </div>
+              <button
+                onClick={() => onFocusLineage(node.id)}
+                className="text-[11px] text-accent hover:underline"
+                title="Show only this node's ancestors and descendants"
+              >
+                Focus lineage
+              </button>
+            </div>
+            <ul className="space-y-1.5">
+              {links.map((l) => (
+                <li key={l.edgeId}>
+                  <button
+                    onClick={() => onNavigate(l.node.id)}
+                    className="group flex w-full items-start gap-2 rounded-md border border-neutral-800 bg-neutral-900/40 p-2 text-left hover:border-neutral-700 hover:bg-neutral-900"
+                  >
+                    <span
+                      className="mt-1 inline-block h-2 w-2 flex-none rounded-full"
+                      style={{ background: RELATION_COLOR[l.relation] ?? '#52525b' }}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-neutral-500">
+                        <span>{l.direction}</span>
+                        <span className="text-neutral-700">·</span>
+                        <span style={{ color: RELATION_COLOR[l.relation] ?? '#9ca3af' }}>
+                          {l.relation.replace(/_/g, ' ')}
+                        </span>
+                      </div>
+                      <div className="truncate text-xs text-neutral-200 group-hover:text-neutral-100">
+                        {l.node.metadata?.extracted?.title ??
+                          l.node.summary ??
+                          l.node.content.slice(0, 80)}
+                      </div>
+                    </div>
+                  </button>
                 </li>
               ))}
             </ul>

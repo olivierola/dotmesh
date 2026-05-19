@@ -574,6 +574,22 @@ export const api = {
     return realFetch(`/collections/${id}/reclassify`, { method: 'POST' });
   },
 
+  async backfillHierarchy(opts: { limit?: number; offset?: number } = {}): Promise<{
+    ok: boolean;
+    scanned: number;
+    pages_linked: number;
+    nav_linked: number;
+    sessions_linked: number;
+    next_offset: number;
+    done: boolean;
+    errors: string[];
+  }> {
+    return realFetch('/backfill-hierarchy', {
+      method: 'POST',
+      body: JSON.stringify(opts),
+    });
+  },
+
   async reclassifyOrphansWithLLM(): Promise<{
     ok: boolean;
     scanned: number;
