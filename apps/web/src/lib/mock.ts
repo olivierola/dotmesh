@@ -15,6 +15,19 @@ export interface MockNode {
   score: number | null;
   created_at: string;
   pinned: boolean;
+  metadata?: {
+    captureType?: 'hover' | 'attention' | 'reading' | 'ai_session' | 'search' | 'active_work' | 'manual';
+    elementType?: 'text' | 'heading' | 'link' | 'image' | 'video' | 'code' | 'quote' | 'list-item';
+    mediaUrl?: string;
+    surroundingContext?: string;
+    pageTitle?: string;
+    capturedAt?: string;
+    heading?: string;
+    author?: string;
+    reason?: string;
+    [key: string]: unknown;
+  };
+  collection_ids?: string[];
 }
 
 const seedNodes: MockNode[] = [

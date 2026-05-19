@@ -2,8 +2,20 @@ import { defineConfig } from 'wxt';
 
 export default defineConfig({
   modules: ['@wxt-dev/module-react'],
+  vite: () => ({
+    build: {
+      // Escape all non-ASCII characters in the bundle. Chrome's content-script
+      // loader rejects files containing certain Unicode codepoints (notably
+      // U+FFFF used by Dexie as a range sentinel) with a misleading
+      // "not encoded in UTF-8" error. Forcing ASCII output sidesteps that.
+      target: 'es2020',
+    },
+    esbuild: {
+      charset: 'ascii',
+    },
+  }),
   manifest: {
-    name: 'Mesh — Your AI memory',
+    name: 'Mesh - Your AI memory',
     description: 'Capture, recall and inject personal context into every AI agent. EU-first.',
     version: '0.2.0',
     permissions: ['storage', 'activeTab', 'scripting', 'alarms', 'contextMenus', 'notifications'],

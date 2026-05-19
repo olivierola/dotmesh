@@ -27,20 +27,21 @@ export async function pushNode(payload: {
   sensitivity?: number;
   metadata?: Record<string, unknown>;
   fingerprint?: string;
-}): Promise<{ node_id: string } | null> {
+}): Promise<{ node_id: string } | { error: string }> {
   try {
     const res = await apiFetch('/nodes', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
     if (!res.ok) {
-      console.warn('pushNode failed', res.status, await res.text());
-      return null;
+      const text = await res.text().catch(() => '');
+      console.warn('[Mesh] pushNode failed', res.status, text);
+      return { error: `${res.status} ${text.slice(0, 120) || res.statusText}` };
     }
     return (await res.json()) as { node_id: string };
   } catch (e) {
-    console.warn('pushNode error', e);
-    return null;
+    console.warn('[Mesh] pushNode error', e);
+    return { error: (e as Error).message || 'network error' };
   }
 }
 
@@ -64,7 +65,7 @@ export async function inject(
       node_ids: string[];
     };
   } catch (e) {
-    console.warn('inject error', e);
+    console.warn('[Mesh] inject error', e);
     return null;
   }
 }

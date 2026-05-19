@@ -55,7 +55,7 @@ export async function ensureFreshAuth(): Promise<AuthState | null> {
       body: JSON.stringify({ refresh_token: auth.refreshToken }),
     });
     if (!res.ok) {
-      console.warn('[mesh-ext] token refresh failed', res.status);
+      console.warn('[Mesh] token refresh failed', res.status);
       return auth;
     }
     const data = (await res.json()) as {
@@ -72,7 +72,7 @@ export async function ensureFreshAuth(): Promise<AuthState | null> {
     await setAuth(next);
     return next;
   } catch (e) {
-    console.warn('[mesh-ext] token refresh error', e);
+    console.warn('[Mesh] token refresh error', e);
     return auth;
   }
 }

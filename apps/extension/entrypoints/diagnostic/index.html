@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mesh — Diagnostics</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: #0a0a0a;
+        color: #e5e5e5;
+        margin: 0;
+        padding: 40px 20px;
+        min-height: 100vh;
+      }
+      .wrap {
+        max-width: 640px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 22px;
+        margin-bottom: 6px;
+      }
+      h1 .dot {
+        color: #f5b301;
+      }
+      p.lead {
+        color: #a3a3a3;
+        font-size: 13px;
+        margin-bottom: 24px;
+      }
+      .card {
+        background: #131313;
+        border: 1px solid #1f1f1f;
+        border-radius: 8px;
+        padding: 16px;
+        margin-bottom: 12px;
+      }
+      .row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 6px 0;
+        font-size: 13px;
+      }
+      .row + .row {
+        border-top: 1px solid #1f1f1f;
+      }
+      .label {
+        color: #a3a3a3;
+      }
+      .value {
+        font-family: ui-monospace, monospace;
+        font-size: 12px;
+        color: #e5e5e5;
+      }
+      .ok {
+        color: #a3e635;
+      }
+      .err {
+        color: #f87171;
+      }
+      .warn {
+        color: #fbbf24;
+      }
+      button {
+        background: #f5b301;
+        color: white;
+        font-weight: 600;
+        border: none;
+        border-radius: 6px;
+        padding: 8px 14px;
+        font-size: 12px;
+        cursor: pointer;
+        margin-right: 8px;
+      }
+      button.secondary {
+        background: transparent;
+        border: 1px solid #2a2a2a;
+        color: #d4d4d4;
+      }
+      button:hover {
+        opacity: 0.9;
+      }
+      pre {
+        background: #0a0a0a;
+        border: 1px solid #1f1f1f;
+        border-radius: 6px;
+        padding: 8px;
+        font-size: 11px;
+        max-height: 240px;
+        overflow: auto;
+        word-break: break-all;
+        white-space: pre-wrap;
+      }
+      h2 {
+        font-size: 14px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: #a3a3a3;
+        margin: 24px 0 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>
+        mesh<span class="dot">.</span>
+        <small style="color: #a3a3a3; font-weight: 400; font-size: 14px;">diagnostics</small>
+      </h1>
+      <p class="lead">
+        Run health checks on your extension. Useful when something's broken — share the report
+        with support.
+      </p>
+
+      <h2>Configuration</h2>
+      <div class="card" id="config">Loading…</div>
+
+      <h2>Auth & API</h2>
+      <div class="card" id="auth">Loading…</div>
+
+      <h2>Local queue</h2>
+      <div class="card" id="queue">Loading…</div>
+
+      <h2>Capture sample</h2>
+      <p class="lead" style="margin-bottom: 8px;">
+        Send a test memory to verify the full pipeline (auth → push → enrich).
+      </p>
+      <div class="card">
+        <button id="test-capture">Send test capture</button>
+        <button id="copy-report" class="secondary">Copy full report</button>
+        <pre id="test-result" style="display: none;"></pre>
+      </div>
+
+      <h2>Raw report</h2>
+      <pre id="raw">Loading…</pre>
+    </div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

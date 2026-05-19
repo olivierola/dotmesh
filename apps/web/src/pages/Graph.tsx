@@ -1,26 +1,93 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import cytoscape, { type Core, type ElementDefinition } from 'cytoscape';
 import fcose from 'cytoscape-fcose';
 import { useQuery } from '@tanstack/react-query';
-import { formatDistanceToNow } from 'date-fns';
-import { api } from '@/lib/api-client';
+import { format, formatDistanceToNow } from 'date-fns';
+import { api, type GraphCollection } from '@/lib/api-client';
 import type { MockNode, MockEdge } from '@/lib/mock';
 import { Skeleton } from '@/components/Skeleton';
 
 cytoscape.use(fcose);
 
-const SOURCE_COLORS: Record<string, string> = {
-  extension: '#60a5fa',
-  manual: '#a78bfa',
-  mcp: '#34d399',
-  'connector:gmail': '#f87171',
-  'connector:slack': '#fbbf24',
-  'connector:gcal': '#22d3ee',
-  'connector:notion': '#e5e5e5',
-};
+const FALLBACK_PALETTE = [
+  '#60a5fa', '#a78bfa', '#34d399', '#f87171', '#fbbf24',
+  '#22d3ee', '#f472b6', '#fb923c', '#84cc16', '#e879f9',
+];
+const INBOX_COLOR = '#737373';
+const ORPHAN_COLOR = '#3f3f46';
+const HUB_COLOR = '#f5b301';
 
-function colorFor(source: string): string {
-  return SOURCE_COLORS[source] ?? '#737373';
+function hashIndex(id: string, mod: number): number {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+  return Math.abs(h) % mod;
+}
+
+function colorForCollection(c: GraphCollection): string {
+  if (c.color) return c.color;
+  if (c.is_default) return INBOX_COLOR;
+  return FALLBACK_PALETTE[hashIndex(c.id, FALLBACK_PALETTE.length)] ?? FALLBACK_PALETTE[0]!;
+}
+
+function nodeColor(node: MockNode, collectionById: Map<string, GraphCollection>): string {
+  const ids = node.collection_ids ?? [];
+  const primary =
+    ids.map((id) => collectionById.get(id)).find((c) => c && !c.is_default) ??
+    ids.map((id) => collectionById.get(id)).find((c) => !!c);
+  if (primary) return colorForCollection(primary);
+  return ORPHAN_COLOR;
+}
+
+function nodeShape(node: MockNode): string {
+  const t = node.metadata?.elementType;
+  if (t === 'image') return 'round-rectangle';
+  if (t === 'video') return 'cut-rectangle';
+  if (t === 'code') return 'round-diamond';
+  if (t === 'link') return 'round-triangle';
+  return 'ellipse';
+}
+
+// Pretty short title for a node label under the dot.
+function shortLabel(n: MockNode): string {
+  const md = n.metadata ?? {};
+  const headingFromMd = (md.heading as string | undefined) ?? '';
+  const titleFromMd = (md.pageTitle as string | undefined) ?? '';
+  const candidate =
+    headingFromMd ||
+    n.summary?.split(/[.\n]/)[0] ||
+    titleFromMd ||
+    n.content.split(/[.\n]/)[0] ||
+    n.content;
+  // Strip leading "[Tag] " markers, normalize whitespace, hard-cap to 24 chars.
+  const cleaned = candidate.replace(/\[[^\]]+\]\s*/g, '').replace(/\s+/g, ' ').trim();
+  if (cleaned.length <= 24) return cleaned;
+  return cleaned.slice(0, 22).trimEnd() + '…';
+}
+
+// Normalize "linkedin.com", "www.linkedin.com", "fr.linkedin.com" → "linkedin"
+function hubKey(node: MockNode): string | null {
+  const host = node.source_app || (() => {
+    try {
+      return new URL(node.source_url ?? '').hostname;
+    } catch {
+      return null;
+    }
+  })();
+  if (!host) return null;
+  // Strip leading subdomains (www, fr, en, m...) — keep registrable-ish core
+  const parts = host.replace(/^www\./, '').split('.');
+  if (parts.length >= 2 && parts[0]) {
+    const main = parts[0];
+    // Some well-known: claude.ai, chatgpt.com — keep them as-is
+    if (parts.length === 2) return main.toLowerCase();
+    // For "fr.linkedin.com" → "linkedin"
+    return parts[parts.length - 2]!.toLowerCase();
+  }
+  return host.toLowerCase();
+}
+
+function hubLabel(key: string): string {
+  return key.charAt(0).toUpperCase() + key.slice(1);
 }
 
 export default function GraphPage() {
@@ -33,20 +100,71 @@ export default function GraphPage() {
     queryFn: () => api.loadGraph(),
   });
 
+  const collectionById = useMemo(() => {
+    const m = new Map<string, GraphCollection>();
+    for (const c of data?.collections ?? []) m.set(c.id, c);
+    return m;
+  }, [data?.collections]);
+
   useEffect(() => {
     if (!data || !containerRef.current) return;
 
-    const nodesById = new Map(data.nodes.map((n) => [n.id, n]));
+    const realNodes = data.nodes;
+    const nodesById = new Map(realNodes.map((n) => [n.id, n]));
+
+    // Build hub nodes per source domain. Create a hub even with 1 member
+    // so that orphan nodes still get visual grouping by source.
+    const hubMembers = new Map<string, string[]>();
+    for (const n of realNodes) {
+      const k = hubKey(n);
+      if (!k) continue;
+      const arr = hubMembers.get(k) ?? [];
+      arr.push(n.id);
+      hubMembers.set(k, arr);
+    }
+
+    const hubElements: ElementDefinition[] = [];
+    const hubEdges: ElementDefinition[] = [];
+    for (const [key, members] of hubMembers) {
+      if (members.length < 1) continue;
+      const hubId = `hub:${key}`;
+      hubElements.push({
+        data: {
+          id: hubId,
+          label: hubLabel(key),
+          color: HUB_COLOR,
+          shape: 'hexagon',
+          isHub: true,
+          degree: members.length,
+        },
+      });
+      for (const nid of members) {
+        hubEdges.push({
+          data: {
+            id: `${hubId}->${nid}`,
+            source: hubId,
+            target: nid,
+            relation: 'origin',
+            confidence: 0.4,
+            label: '',
+            isHubEdge: true,
+          },
+        });
+      }
+    }
 
     const elements: ElementDefinition[] = [
-      ...data.nodes.map((n) => ({
+      ...realNodes.map((n) => ({
         data: {
           id: n.id,
-          label: (n.summary ?? n.content).slice(0, 60),
-          color: colorFor(n.source),
+          label: shortLabel(n),
+          color: nodeColor(n, collectionById),
+          shape: nodeShape(n),
           source: n.source,
+          isHub: false,
         },
       })),
+      ...hubElements,
       ...data.edges
         .filter((e) => nodesById.has(e.from_node) && nodesById.has(e.to_node))
         .map((e) => ({
@@ -57,8 +175,10 @@ export default function GraphPage() {
             relation: e.relation_type,
             confidence: e.confidence,
             label: e.shared_entity ?? '',
+            isHubEdge: false,
           },
         })),
+      ...hubEdges,
     ];
 
     const cy = cytoscape({
@@ -69,34 +189,68 @@ export default function GraphPage() {
           selector: 'node',
           style: {
             'background-color': 'data(color)',
+            // @ts-expect-error data() for shape works at runtime
+            shape: 'data(shape)',
             'border-color': '#0a0a0a',
             'border-width': 2,
             label: 'data(label)',
             color: '#e5e5e5',
             'font-size': 9,
+            'font-weight': 500,
             'font-family': 'Inter, system-ui, sans-serif',
-            'text-wrap': 'wrap',
-            'text-max-width': '120px',
+            'text-wrap': 'ellipsis',
+            'text-max-width': '110px',
             'text-valign': 'bottom',
+            'text-halign': 'center',
             'text-margin-y': 6,
-            width: 'mapData(degree, 0, 10, 18, 56)',
-            height: 'mapData(degree, 0, 10, 18, 56)',
+            'text-background-color': '#0a0a0a',
+            'text-background-opacity': 0.75,
+            'text-background-padding': '3px',
+            'text-background-shape': 'roundrectangle',
+            'text-events': 'no',
+            'min-zoomed-font-size': 8,
+            width: 18,
+            height: 18,
+          },
+        },
+        {
+          selector: 'node[isHub]',
+          style: {
+            'background-color': HUB_COLOR,
+            'border-color': '#fef3c7',
+            'border-width': 3,
+            'font-size': 13,
+            'font-weight': 700,
+            color: '#fde68a',
+            width: 'mapData(degree, 2, 30, 38, 80)',
+            height: 'mapData(degree, 2, 30, 38, 80)',
+            'text-margin-y': 10,
           },
         },
         {
           selector: 'node:selected',
-          style: { 'border-color': '#f5b301', 'border-width': 3 },
+          style: { 'border-color': '#f5b301', 'border-width': 4 },
         },
         {
           selector: 'edge',
           style: {
-            width: 'mapData(confidence, 0, 1, 0.5, 3)',
+            width: 'mapData(confidence, 0, 1, 0.5, 2.5)',
             'line-color': '#3f3f46',
             'curve-style': 'bezier',
-            opacity: 0.7,
+            opacity: 0.6,
             'target-arrow-shape': 'triangle',
             'target-arrow-color': '#3f3f46',
-            'arrow-scale': 0.7,
+            'arrow-scale': 0.6,
+          },
+        },
+        {
+          selector: 'edge[isHubEdge]',
+          style: {
+            'line-color': '#52525b',
+            'line-style': 'dashed',
+            'target-arrow-shape': 'none',
+            opacity: 0.4,
+            width: 1,
           },
         },
         {
@@ -109,26 +263,44 @@ export default function GraphPage() {
         },
         {
           selector: 'edge:selected',
-          style: { 'line-color': '#f5b301', 'target-arrow-color': '#f5b301' },
+          style: { 'line-color': '#f5b301', 'target-arrow-color': '#f5b301', opacity: 1 },
         },
       ],
       layout: {
         name: 'fcose',
-        // @ts-expect-error fcose options not in core types
-        quality: 'default',
+        // @ts-expect-error fcose options
+        quality: 'proof',
         animate: false,
-        nodeRepulsion: 6000,
-        idealEdgeLength: 90,
-        gravity: 0.2,
-        padding: 30,
+        nodeRepulsion: 45000,
+        idealEdgeLength: (edge: cytoscape.EdgeSingular) =>
+          edge.data('isHubEdge') ? 100 : 180,
+        edgeElasticity: 0.3,
+        gravity: 0.1,
+        gravityRange: 2.5,
+        padding: 60,
+        randomize: true,
+        nodeSeparation: 220,
+        // Discourage overlap aggressively
+        nodeOverlap: 30,
+        uniformNodeDimensions: false,
+        // Group nodes by hub via implicit cluster discovery
+        relationships: [],
+        tile: false,
       },
       wheelSensitivity: 0.2,
-      minZoom: 0.3,
+      minZoom: 0.2,
       maxZoom: 3,
     });
 
     cy.on('tap', 'node', (evt) => {
       const id = evt.target.id() as string;
+      if (id.startsWith('hub:')) {
+        // Clicking a hub focuses its cluster — center + zoom
+        const neighbors = evt.target.neighborhood();
+        cy.animate({ fit: { eles: evt.target.union(neighbors), padding: 60 }, duration: 380 });
+        setSelected(null);
+        return;
+      }
       setSelected(nodesById.get(id) ?? null);
     });
     cy.on('tap', (evt) => {
@@ -140,12 +312,12 @@ export default function GraphPage() {
       cy.destroy();
       cyRef.current = null;
     };
-  }, [data]);
+  }, [data, collectionById]);
 
   const stats = data && {
     nodes: data.nodes.length,
     edges: data.edges.length,
-    sources: new Set(data.nodes.map((n) => n.source)).size,
+    collections: data.collections.length,
   };
 
   return (
@@ -154,6 +326,9 @@ export default function GraphPage() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-xl font-semibold">Graph Explorer</h1>
+            <p className="mt-0.5 text-xs text-neutral-500">
+              Hexagons = source hubs. Shapes = element type. Color = collection.
+            </p>
           </div>
           {stats && (
             <div className="flex gap-4 text-xs text-neutral-400">
@@ -164,7 +339,7 @@ export default function GraphPage() {
                 <strong className="text-neutral-200">{stats.edges}</strong> edges
               </span>
               <span>
-                <strong className="text-neutral-200">{stats.sources}</strong> sources
+                <strong className="text-neutral-200">{stats.collections}</strong> collections
               </span>
             </div>
           )}
@@ -179,49 +354,98 @@ export default function GraphPage() {
             <div className="flex flex-col items-center gap-3">
               <div className="relative">
                 <Skeleton w={64} h={64} rounded="full" />
-                <Skeleton
-                  w={28}
-                  h={28}
-                  rounded="full"
-                  className="absolute -right-10 top-2"
-                />
-                <Skeleton
-                  w={20}
-                  h={20}
-                  rounded="full"
-                  className="absolute -left-8 bottom-1"
-                />
+                <Skeleton w={28} h={28} rounded="full" className="absolute -right-10 top-2" />
+                <Skeleton w={20} h={20} rounded="full" className="absolute -left-8 bottom-1" />
               </div>
               <Skeleton w={100} h={10} rounded="sm" />
             </div>
           </div>
         )}
 
-        {selected && <SidePanel node={selected} onClose={() => setSelected(null)} />}
+        {selected && (
+          <SidePanel
+            node={selected}
+            collections={(selected.collection_ids ?? [])
+              .map((id) => collectionById.get(id))
+              .filter((c): c is GraphCollection => !!c)}
+            onClose={() => setSelected(null)}
+          />
+        )}
 
-        {/* Legend */}
-        <div className="pointer-events-none absolute bottom-4 left-4 hidden rounded-md border border-neutral-800 bg-neutral-950/90 p-3 text-xs backdrop-blur sm:block">
-          <div className="mb-2 font-medium text-neutral-300">Sources</div>
-          {Object.entries(SOURCE_COLORS).map(([src, col]) => (
-            <div key={src} className="flex items-center gap-2 text-neutral-400">
-              <span
-                className="inline-block h-2 w-2 rounded-full"
-                style={{ background: col }}
-              />
-              {src}
+        {data && data.collections.length > 0 && (
+          <div className="pointer-events-none absolute bottom-4 left-4 hidden max-w-[220px] rounded-md border border-neutral-800 bg-neutral-950/90 p-3 text-xs backdrop-blur sm:block">
+            <div className="mb-2 font-medium text-neutral-300">Collections</div>
+            <ul className="space-y-1">
+              {data.collections.slice(0, 12).map((c) => (
+                <li key={c.id} className="flex items-center gap-2 text-neutral-400">
+                  <span
+                    className="inline-block h-2 w-2 rounded-full"
+                    style={{ background: colorForCollection(c) }}
+                  />
+                  <span className="truncate">{c.name}</span>
+                  {typeof c.node_count === 'number' && (
+                    <span className="ml-auto text-[10px] text-neutral-600">{c.node_count}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <div className="mt-3 border-t border-neutral-800 pt-2 text-neutral-500">
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-2 w-2 rotate-12" style={{ background: HUB_COLOR, clipPath: 'polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%)' }} />
+                Source hub
+              </div>
             </div>
-          ))}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function SidePanel({ node, onClose }: { node: MockNode; onClose: () => void }) {
+function SidePanel({
+  node,
+  collections,
+  onClose,
+}: {
+  node: MockNode;
+  collections: GraphCollection[];
+  onClose: () => void;
+}) {
+  const elType = node.metadata?.elementType;
+  const mediaUrl = node.metadata?.mediaUrl as string | undefined;
+  const captureType = node.metadata?.captureType;
+  const capturedAt = (node.metadata?.capturedAt as string | undefined) ?? node.created_at;
+  const dateObj = new Date(capturedAt);
+  const surroundingContext = node.metadata?.surroundingContext as string | undefined;
+  const heading = node.metadata?.heading as string | undefined;
+  const author = node.metadata?.author as string | undefined;
+  const pageTitle = node.metadata?.pageTitle as string | undefined;
+  const reason = node.metadata?.reason as string | undefined;
+
+  // Strip the leading [tag] from the content (e.g., "[Image] https://...") for display
+  const cleanContent = (node.content ?? '').replace(/^\[[^\]]+\]\s*/, '');
+
   return (
-    <aside className="absolute right-0 top-0 z-10 flex h-full w-full max-w-[90vw] flex-col border-l border-neutral-800 bg-neutral-950/95 backdrop-blur sm:w-80">
+    <aside className="absolute right-0 top-0 z-10 flex h-full w-full max-w-[90vw] flex-col border-l border-neutral-800 bg-neutral-950/95 backdrop-blur sm:w-[420px]">
       <div className="flex items-center justify-between border-b border-neutral-800 p-4">
-        <div className="text-xs uppercase tracking-widest text-neutral-500">{node.source}</div>
+        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+          {captureType && (
+            <span className="rounded bg-amber-500/10 px-2 py-0.5 text-amber-300">
+              {captureType}
+            </span>
+          )}
+          {elType && (
+            <span className="rounded border border-neutral-800 px-2 py-0.5 text-neutral-400">
+              {elType}
+            </span>
+          )}
+          {reason && (
+            <span className="rounded border border-neutral-800 px-2 py-0.5 text-neutral-500">
+              {reason}
+            </span>
+          )}
+          <span className="text-neutral-500">{node.source}</span>
+        </div>
         <button
           onClick={onClose}
           className="rounded p-1 text-neutral-500 hover:bg-neutral-900 hover:text-neutral-300"
@@ -229,22 +453,157 @@ function SidePanel({ node, onClose }: { node: MockNode; onClose: () => void }) {
           ✕
         </button>
       </div>
-      <div className="flex-1 overflow-y-auto p-4 text-sm">
-        <p className="mb-3 text-neutral-200">{node.summary ?? node.content.slice(0, 240)}</p>
-        <p className="mb-4 text-xs text-neutral-500">
-          {formatDistanceToNow(new Date(node.created_at), { addSuffix: true })}
-        </p>
 
+      <div className="flex-1 overflow-y-auto p-4 text-sm">
+        {/* Media preview */}
+        {elType === 'image' && mediaUrl && (
+          <div className="mb-4 overflow-hidden rounded-md border border-neutral-800 bg-neutral-900">
+            <img
+              src={mediaUrl}
+              alt={node.summary ?? ''}
+              className="block h-auto max-h-80 w-full object-contain"
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).style.display = 'none';
+              }}
+            />
+          </div>
+        )}
+        {elType === 'video' && mediaUrl && (
+          <div className="mb-4 overflow-hidden rounded-md border border-neutral-800 bg-neutral-900">
+            <video src={mediaUrl} controls className="block h-auto max-h-80 w-full" preload="metadata" />
+          </div>
+        )}
+        {elType === 'code' && (
+          <pre className="mb-4 max-h-72 overflow-auto rounded-md border border-neutral-800 bg-neutral-900 p-3 text-[11px] leading-relaxed text-neutral-300">
+            <code>{cleanContent}</code>
+          </pre>
+        )}
+
+        {/* Summary */}
+        {node.summary && (
+          <div className="mb-4">
+            <div className="mb-1 text-[10px] uppercase tracking-widest text-neutral-500">
+              Summary
+            </div>
+            <p className="whitespace-pre-wrap text-neutral-200">{node.summary}</p>
+          </div>
+        )}
+
+        {/* Full content (collapsed for long ones) */}
+        {elType !== 'code' && cleanContent && (
+          <FullContent text={cleanContent} />
+        )}
+
+        {/* Heading / author from metadata */}
+        {(heading || author) && (
+          <div className="mb-4 rounded-md border border-neutral-800 bg-neutral-900/40 p-3 text-xs">
+            {heading && <div className="text-neutral-300">{heading}</div>}
+            {author && <div className="mt-1 text-neutral-500">By {author}</div>}
+          </div>
+        )}
+
+        {/* Surrounding context (for images/videos) */}
+        {surroundingContext && (
+          <div className="mb-4">
+            <div className="mb-1 text-[10px] uppercase tracking-widest text-neutral-500">
+              Context around
+            </div>
+            <p className="rounded-md border border-neutral-800 bg-neutral-900/30 p-2 text-xs text-neutral-400">
+              {surroundingContext}
+            </p>
+          </div>
+        )}
+
+        {/* Metadata: date + url */}
+        <div className="mb-4 space-y-1.5 rounded-md border border-neutral-800 bg-neutral-900/30 p-3 text-xs">
+          <div className="flex justify-between gap-3">
+            <span className="text-neutral-500">Captured</span>
+            <span className="text-right text-neutral-300">
+              {format(dateObj, 'MMM d, yyyy · HH:mm:ss')}
+              <span className="ml-1 text-neutral-500">
+                ({formatDistanceToNow(dateObj, { addSuffix: true })})
+              </span>
+            </span>
+          </div>
+          {node.source_app && (
+            <div className="flex justify-between gap-3">
+              <span className="text-neutral-500">Source app</span>
+              <span className="text-neutral-300">{node.source_app}</span>
+            </div>
+          )}
+          {pageTitle && (
+            <div className="flex justify-between gap-3">
+              <span className="text-neutral-500">Page</span>
+              <span className="truncate text-right text-neutral-300" title={pageTitle}>
+                {pageTitle.length > 50 ? pageTitle.slice(0, 50) + '…' : pageTitle}
+              </span>
+            </div>
+          )}
+          {node.source_url && (
+            <div className="flex justify-between gap-3">
+              <span className="text-neutral-500">URL</span>
+              <a
+                href={node.source_url}
+                target="_blank"
+                rel="noreferrer"
+                className="truncate text-right text-accent hover:underline"
+                title={node.source_url}
+              >
+                {(() => {
+                  try {
+                    const u = new URL(node.source_url!);
+                    return u.hostname + u.pathname.slice(0, 30);
+                  } catch {
+                    return node.source_url;
+                  }
+                })()}
+              </a>
+            </div>
+          )}
+          {typeof node.score === 'number' && (
+            <div className="flex justify-between gap-3">
+              <span className="text-neutral-500">Score</span>
+              <span className="text-neutral-300">{node.score.toFixed(2)}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Collections */}
+        {collections.length > 0 && (
+          <div className="mb-4">
+            <div className="mb-1.5 text-[10px] uppercase tracking-widest text-neutral-500">
+              Collections
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {collections.map((c) => (
+                <span
+                  key={c.id}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-300"
+                >
+                  <span
+                    className="inline-block h-1.5 w-1.5 rounded-full"
+                    style={{ background: colorForCollection(c) }}
+                  />
+                  {c.icon ? `${c.icon} ` : ''}
+                  {c.name}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Entities */}
         {node.entities.length > 0 && (
           <div className="mb-4">
-            <div className="mb-1.5 text-xs uppercase tracking-widest text-neutral-500">
-              Entities
+            <div className="mb-1.5 text-[10px] uppercase tracking-widest text-neutral-500">
+              Entities ({node.entities.length})
             </div>
             <div className="flex flex-wrap gap-1">
               {node.entities.map((e, i) => (
                 <span
                   key={i}
                   className="rounded-full bg-neutral-900 px-2 py-0.5 text-[11px] text-neutral-300"
+                  title={e.type}
                 >
                   {e.value}
                 </span>
@@ -253,9 +612,10 @@ function SidePanel({ node, onClose }: { node: MockNode; onClose: () => void }) {
           </div>
         )}
 
+        {/* Tags */}
         {node.tags.length > 0 && (
-          <div>
-            <div className="mb-1.5 text-xs uppercase tracking-widest text-neutral-500">Tags</div>
+          <div className="mb-4">
+            <div className="mb-1.5 text-[10px] uppercase tracking-widest text-neutral-500">Tags</div>
             <div className="flex flex-wrap gap-1">
               {node.tags.map((t, i) => (
                 <span
@@ -268,21 +628,32 @@ function SidePanel({ node, onClose }: { node: MockNode; onClose: () => void }) {
             </div>
           </div>
         )}
-
-        {node.source_url && (
-          <a
-            href={node.source_url}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-4 inline-block text-xs text-accent hover:underline"
-          >
-            Open source ↗
-          </a>
-        )}
       </div>
     </aside>
   );
 }
 
-// Keep the unused import shut up
+function FullContent({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const long = text.length > 400;
+  const display = !long || expanded ? text : text.slice(0, 400) + '…';
+
+  return (
+    <div className="mb-4">
+      <div className="mb-1 text-[10px] uppercase tracking-widest text-neutral-500">
+        Content
+      </div>
+      <p className="whitespace-pre-wrap text-sm text-neutral-300">{display}</p>
+      {long && (
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="mt-1 text-xs text-accent hover:underline"
+        >
+          {expanded ? 'Show less' : `Show all (${text.length} chars)`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 void {} as MockEdge | undefined;

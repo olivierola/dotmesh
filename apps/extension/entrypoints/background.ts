@@ -8,7 +8,7 @@
  */
 
 import { defineBackground } from 'wxt/sandbox';
-import { db, getSetting } from '@/lib/db';
+import { db, getSetting, setSetting } from '@/lib/db';
 import { fingerprintOf } from '@/lib/fingerprint';
 import { pushNode, inject } from '@/lib/api-client';
 import { scoreSignal, type SignalInput } from '@/lib/scorer';
@@ -22,7 +22,7 @@ export default defineBackground(() => {
   chrome.alarms.create('mesh-flush-queue', { periodInMinutes: 1 });
   chrome.alarms.create('mesh-refresh-keywords', { periodInMinutes: 10 });
   chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === 'mesh-flush-queue') flushQueue().catch(console.warn);
+    if (alarm.name === 'mesh-flush-queue') flushQueue().catch((e) => console.warn('[Mesh] flush failed', e));
     if (alarm.name === 'mesh-refresh-keywords') refreshKeywordsIfStale().catch(console.warn);
   });
 
@@ -33,6 +33,12 @@ export default defineBackground(() => {
     }
     if (msg.type === 'INJECT_REQUEST') {
       handleInjectRequest(msg.query, msg.targetAgent).then(sendResponse);
+      return true;
+    }
+    if (msg.type === 'FLUSH_QUEUE') {
+      flushQueue()
+        .then(() => sendResponse({ ok: true }))
+        .catch(() => sendResponse({ ok: false }));
       return true;
     }
     return false;
@@ -150,7 +156,7 @@ async function manualCapture(input: {
     fingerprint,
   });
   await db.fingerprints.put({ hash: fingerprint, ts: Date.now() });
-  flushQueue().catch(console.warn);
+  flushQueue().catch((e) => console.warn('[Mesh] flush failed', e));
   notify('Saved to Mesh', input.content.slice(0, 100));
 }
 
@@ -190,7 +196,7 @@ async function handleInjectRequest(
 
 async function handleSignal(
   signal: SignalInput,
-  metadata: { sourceApp?: string } = {},
+  metadata: Record<string, unknown> = {},
 ): Promise<{ ok: boolean; decision: string }> {
   // Skip everything if the user is paused or signed out
   const paused = await getSetting<boolean>('paused', false);
@@ -198,15 +204,36 @@ async function handleSignal(
   const auth = await getAuth();
   if (!auth) return { ok: false, decision: 'unauthenticated' };
 
+  // Explicit user actions (hover-click) bypass the scorer entirely.
+  // The scorer is only for passive/auto signals that may not deserve a push.
+  const isExplicit = signal.signalType === 'hover';
+
   const result = scoreSignal(signal);
-  if (result.decision !== 'push') return { ok: false, decision: result.decision };
+  if (!isExplicit && result.decision !== 'push') {
+    console.log('[Mesh] signal dropped by scorer', {
+      type: signal.signalType,
+      score: result.score,
+      reason: result.reason,
+    });
+    return { ok: false, decision: result.decision };
+  }
+  if (result.decision === 'block') {
+    console.warn('[Mesh] signal blocked (sensitive content)', signal.signalType);
+    return { ok: false, decision: 'block' };
+  }
 
   const fingerprint = await fingerprintOf(signal.signalType, signal.content);
-  // Dedup
-  const existing = await db.fingerprints.get(fingerprint);
-  if (existing && Date.now() - existing.ts < 7 * 86400_000) {
-    return { ok: false, decision: 'duplicate' };
+  // Dedup (skip for explicit actions — user may want to re-capture)
+  if (!isExplicit) {
+    const existing = await db.fingerprints.get(fingerprint);
+    if (existing && Date.now() - existing.ts < 7 * 86400_000) {
+      return { ok: false, decision: 'duplicate' };
+    }
   }
+
+  const sourceApp = (metadata.sourceApp as string | undefined) ?? undefined;
+  // Strip sourceApp from the metadata blob to avoid duplicating it
+  const { sourceApp: _drop, ...metaRest } = metadata as { sourceApp?: string } & Record<string, unknown>;
 
   await db.queue.add({
     status: 'pending',
@@ -214,14 +241,16 @@ async function handleSignal(
       content: signal.content,
       source: 'extension',
       source_url: signal.url,
-      source_app: metadata.sourceApp,
+      source_app: sourceApp,
       tags: [signal.signalType],
-      score: result.score,
+      score: isExplicit ? 1 : result.score,
       sensitivity: result.sensitivity,
       metadata: {
+        ...metaRest,
         relevance: result.relevance,
         novelty: result.novelty,
         intent: result.intent,
+        signalType: signal.signalType,
       },
     },
     attempts: 0,
@@ -230,24 +259,37 @@ async function handleSignal(
   });
   await db.fingerprints.put({ hash: fingerprint, ts: Date.now() });
 
+  console.log('[Mesh] signal queued', signal.signalType, signal.content.slice(0, 60));
   // Try immediate push
-  flushQueue().catch(console.warn);
+  flushQueue().catch((e) => console.warn('[Mesh] flush failed', e));
   return { ok: true, decision: 'queued' };
 }
 
 async function flushQueue(): Promise<void> {
   const pending = await db.queue.where('status').equals('pending').limit(10).toArray();
+  let lastFailure: string | null = null;
+  let hadSuccess = false;
+
   for (const item of pending) {
     const result = await pushNode({ ...item.payload, fingerprint: item.fingerprint });
-    if (result) {
+    if ('node_id' in result) {
       await db.queue.update(item.id!, { status: 'sent' });
+      hadSuccess = true;
     } else {
       const attempts = item.attempts + 1;
+      lastFailure = result.error;
       if (attempts >= 5) {
         await db.queue.update(item.id!, { status: 'failed', attempts });
       } else {
         await db.queue.update(item.id!, { attempts });
       }
     }
+  }
+
+  // Clear last_error on first successful flush, set it otherwise
+  if (hadSuccess && !lastFailure) {
+    await setSetting('last_error', null);
+  } else if (lastFailure) {
+    await setSetting('last_error', lastFailure);
   }
 }

@@ -77,6 +77,16 @@ export interface SearchResponse {
   results: Array<MockNode & { score: number }>;
 }
 
+export interface GraphCollection {
+  id: string;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  color: string | null;
+  is_default: boolean;
+  node_count?: number;
+}
+
 export const api = {
   isMock: USE_MOCK,
 
@@ -157,15 +167,26 @@ export const api = {
   },
 
   // ----- Graph -----
-  async loadGraph(): Promise<{ nodes: MockNode[]; edges: MockEdge[] }> {
-    if (USE_MOCK) return mockGraph.load();
-    const [nodes, edgesRaw] = await Promise.all([
-      realFetch<ListNodesResponse>('/nodes?limit=500'),
+  async loadGraph(): Promise<{
+    nodes: MockNode[];
+    edges: MockEdge[];
+    collections: GraphCollection[];
+  }> {
+    if (USE_MOCK) {
+      const g = await mockGraph.load();
+      return { ...g, collections: [] };
+    }
+    const [nodes, edgesRaw, collectionsRes] = await Promise.all([
+      realFetch<ListNodesResponse>('/nodes?limit=500&with_collections=true'),
       supabase.from('context_edges').select('*'),
+      realFetch<{ collections: GraphCollection[] }>('/collections').catch(() => ({
+        collections: [] as GraphCollection[],
+      })),
     ]);
     return {
       nodes: nodes.nodes,
       edges: (edgesRaw.data ?? []) as unknown as MockEdge[],
+      collections: collectionsRes.collections ?? [],
     };
   },
 

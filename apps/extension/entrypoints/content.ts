@@ -10,6 +10,8 @@ import { defineContentScript } from 'wxt/sandbox';
 import { findAdapter, findInput, readDraft, writeDraft, type AgentAdapter } from '@/lib/injector';
 import { mountOverlay } from '@/lib/overlay';
 import { isDomainBlocked } from '@/lib/blocked-domains';
+import { installHoverCapture } from '@/lib/hover-capture';
+import { installAttentionTracker } from '@/lib/attention-tracker';
 
 export default defineContentScript({
   matches: ['<all_urls>'],
@@ -31,6 +33,10 @@ export default defineContentScript({
       installSearchSignal(hostname);
       installActiveWorkSignal(hostname);
     }
+
+    // Hover-to-capture and attention tracking run everywhere (except blocked domains).
+    installHoverCapture();
+    installAttentionTracker();
   },
 });
 
@@ -47,42 +53,62 @@ function installReadingSignal(): void {
   };
   window.addEventListener('scroll', onScroll, { passive: true });
 
+  const fire = (reason: 'dwell' | 'leave') => {
+    if (fired) return;
+    const dwell = Date.now() - start;
+    const article = document.querySelector('article, main, [role="main"]') ?? document.body;
+    const text = (article.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 4000);
+    if (text.length < 200) return;
+    fired = true;
+    chrome.runtime.sendMessage({
+      type: 'CAPTURE_SIGNAL',
+      signal: {
+        content: `[Reading] ${document.title}\n\n${text}`,
+        url: window.location.href,
+        signalType: 'reading',
+        dwellMs: dwell,
+        scrollDepth: maxScroll,
+      },
+      metadata: {
+        sourceApp: window.location.hostname,
+        captureType: 'reading',
+        elementType: 'text',
+        pageTitle: document.title,
+        capturedAt: new Date().toISOString(),
+        reason,
+      },
+    });
+  };
+
   const check = () => {
     if (fired) return;
     const dwell = Date.now() - start;
-    if (dwell > 45_000 && maxScroll > 0.7) {
-      fired = true;
-      const article = document.querySelector('article, main, [role="main"]') ?? document.body;
-      const text = (article.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 4000);
-      if (text.length < 200) return;
-      chrome.runtime.sendMessage({
-        type: 'CAPTURE_SIGNAL',
-        signal: {
-          content: `[Reading] ${document.title}\n\n${text}`,
-          url: window.location.href,
-          signalType: 'reading',
-          dwellMs: dwell,
-          scrollDepth: maxScroll,
-        },
-        metadata: { sourceApp: 'web' },
-      });
+    // Either: dwell + some scroll  OR  long dwell without scroll (deep focus)
+    if ((dwell > 20_000 && maxScroll > 0.4) || dwell > 60_000) {
+      fire('dwell');
     }
   };
-  setInterval(check, 10_000);
+  setInterval(check, 5_000);
+  window.addEventListener('beforeunload', () => fire('leave'));
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') fire('leave');
+  });
 }
 
 // --------------- AI session signal ----------------
 function installAgentSessionSignal(hostname: string): void {
   let lastUrl = window.location.href;
   let lastCaptureAt = 0;
+  let lastMessageCount = 0;
 
-  const tryCapture = () => {
+  const tryCapture = (reason: 'url-change' | 'new-messages' | 'leave') => {
     const now = Date.now();
-    if (now - lastCaptureAt < 30_000) return;
+    if (now - lastCaptureAt < 20_000) return;
     const messages = document.querySelectorAll(
       '[data-message-author-role], [data-testid="conversation-turn"], main article',
     );
     if (messages.length < 2) return;
+    // Capture last 2 messages (typically last user prompt + assistant reply)
     const last = Array.from(messages).slice(-2);
     const text = last
       .map((el) => (el.textContent ?? '').replace(/\s+/g, ' ').trim())
@@ -90,6 +116,7 @@ function installAgentSessionSignal(hostname: string): void {
       .slice(0, 4000);
     if (text.length < 100) return;
     lastCaptureAt = now;
+    lastMessageCount = messages.length;
     chrome.runtime.sendMessage({
       type: 'CAPTURE_SIGNAL',
       signal: {
@@ -99,18 +126,39 @@ function installAgentSessionSignal(hostname: string): void {
         dwellMs: 60_000,
         scrollDepth: 1,
       },
-      metadata: { sourceApp: hostname },
+      metadata: {
+        sourceApp: hostname,
+        captureType: 'ai_session',
+        elementType: 'text',
+        pageTitle: document.title,
+        capturedAt: new Date().toISOString(),
+        reason,
+        messageCount: messages.length,
+      },
     });
   };
 
+  // Periodic check: URL change OR new messages arrived
   setInterval(() => {
     if (window.location.href !== lastUrl) {
-      tryCapture();
+      tryCapture('url-change');
       lastUrl = window.location.href;
+      lastMessageCount = 0;
+      return;
     }
-  }, 5_000);
+    const messages = document.querySelectorAll(
+      '[data-message-author-role], [data-testid="conversation-turn"], main article',
+    );
+    // If at least 2 new messages since last capture (typically a user→assistant exchange)
+    if (messages.length >= lastMessageCount + 2) {
+      tryCapture('new-messages');
+    }
+  }, 10_000);
 
-  window.addEventListener('beforeunload', tryCapture);
+  window.addEventListener('beforeunload', () => tryCapture('leave'));
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') tryCapture('leave');
+  });
 }
 
 // --------------- Injection (killer feature) ----------------
@@ -296,7 +344,7 @@ function installActiveWorkSignal(hostname: string): void {
     chrome.runtime.sendMessage({
       type: 'CAPTURE_SIGNAL',
       signal: {
-        content: `[Active work — ${hostname}]\n${title}\n\n${focusedText}`,
+        content: `[Active work - ${hostname}]\n${title}\n\n${focusedText}`,
         url: window.location.href,
         signalType: 'active_work',
         dwellMs: 60_000,

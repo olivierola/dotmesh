@@ -49,3 +49,5 @@ coverage/
 
 # Tool results / local memory
 .claude/
+
+.vercel

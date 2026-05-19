@@ -66,7 +66,7 @@ export function mountOverlay(content: OverlayContent, handlers: OverlayHandlers)
     </style>
     <div class="card">
       <div class="head">
-        <div class="title">🧠 Mesh found ${content.nodeCount} relevant ${content.nodeCount === 1 ? 'memory' : 'memories'}</div>
+        <div class="title">Mesh found ${content.nodeCount} relevant ${content.nodeCount === 1 ? 'memory' : 'memories'}</div>
         <div class="badge">${content.agentHostname}</div>
       </div>
       <ul>

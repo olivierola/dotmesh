@@ -242,7 +242,51 @@ function NodeRow({
             </div>
           </div>
         ) : (
-          <p className="text-neutral-200">{n.summary ?? n.content.slice(0, 240)}</p>
+          <>
+            {/* Capture type + element type badges */}
+            {(n.metadata?.captureType || n.metadata?.elementType) && (
+              <div className="mb-1.5 flex items-center gap-1.5 text-[10px]">
+                {n.metadata?.captureType && (
+                  <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-300">
+                    {n.metadata.captureType}
+                  </span>
+                )}
+                {n.metadata?.elementType && n.metadata.elementType !== 'text' && (
+                  <span className="rounded border border-neutral-800 px-1.5 py-0.5 text-neutral-400">
+                    {n.metadata.elementType}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Media thumb for images/videos */}
+            {n.metadata?.elementType === 'image' && n.metadata?.mediaUrl && (
+              <div className="mb-2 overflow-hidden rounded border border-neutral-800 bg-neutral-950">
+                <img
+                  src={n.metadata.mediaUrl as string}
+                  alt={n.summary ?? ''}
+                  className="block h-auto max-h-48 w-full object-contain"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).style.display = 'none';
+                  }}
+                />
+              </div>
+            )}
+            {n.metadata?.elementType === 'video' && n.metadata?.mediaUrl && (
+              <div className="mb-2 overflow-hidden rounded border border-neutral-800 bg-neutral-950">
+                <video
+                  src={n.metadata.mediaUrl as string}
+                  controls
+                  preload="metadata"
+                  className="block h-auto max-h-48 w-full"
+                />
+              </div>
+            )}
+
+            <p className="whitespace-pre-wrap text-neutral-200">
+              {n.summary ?? n.content.slice(0, 240)}
+            </p>
+          </>
         )}
 
         {n.entities.length > 0 && !editing && (

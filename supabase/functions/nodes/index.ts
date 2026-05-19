@@ -160,13 +160,16 @@ async function invokeProcessor(nodeId: string): Promise<void> {
 async function handleList(req: Request): Promise<Response> {
   const { client } = await requireUser(req);
   const url = new URL(req.url);
-  const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '20', 10), 100);
+  const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '20', 10), 500);
   const offset = parseInt(url.searchParams.get('offset') ?? '0', 10);
   const source = url.searchParams.get('source');
+  const withCollections = url.searchParams.get('with_collections') === 'true';
 
   let query = client
     .from('context_nodes')
-    .select('id, source, source_url, source_app, content, summary, entities, tags, score, created_at, pinned')
+    .select(
+      'id, source, source_url, source_app, content, summary, entities, tags, score, created_at, pinned, metadata',
+    )
     .order('created_at', { ascending: false })
     .range(offset, offset + limit - 1);
 
@@ -174,7 +177,27 @@ async function handleList(req: Request): Promise<Response> {
 
   const { data, error } = await query;
   if (error) return errorResponse('list_failed', 500, error);
-  return jsonResponse({ nodes: data ?? [], limit, offset });
+
+  let nodes = data ?? [];
+
+  // Optionally join collection memberships (single round-trip via separate query,
+  // then merge in JS — cheap since both sets are small).
+  if (withCollections && nodes.length > 0) {
+    const ids = nodes.map((n) => n.id);
+    const { data: links } = await client
+      .from('node_collections')
+      .select('node_id, collection_id')
+      .in('node_id', ids);
+    const byNode = new Map<string, string[]>();
+    for (const l of links ?? []) {
+      const arr = byNode.get(l.node_id) ?? [];
+      arr.push(l.collection_id);
+      byNode.set(l.node_id, arr);
+    }
+    nodes = nodes.map((n) => ({ ...n, collection_ids: byNode.get(n.id) ?? [] }));
+  }
+
+  return jsonResponse({ nodes, limit, offset });
 }
 
 const patchSchema = z.object({

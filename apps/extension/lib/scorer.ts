@@ -11,7 +11,15 @@
 export interface SignalInput {
   content: string;
   url: string;
-  signalType: 'reading' | 'ai_session' | 'search' | 'decision' | 'active_work' | 'temporal';
+  signalType:
+    | 'reading'
+    | 'ai_session'
+    | 'search'
+    | 'decision'
+    | 'active_work'
+    | 'temporal'
+    | 'hover'
+    | 'attention';
   dwellMs: number;
   scrollDepth: number;
 }
@@ -33,6 +41,8 @@ const SIGNAL_INTENT: Record<SignalInput['signalType'], number> = {
   decision: 0.9,
   active_work: 0.75,
   temporal: 0.6,
+  hover: 1.0,
+  attention: 0.8,
 };
 
 const SENSITIVE_PATTERNS = [
