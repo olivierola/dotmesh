@@ -277,15 +277,14 @@ export default function GraphPage() {
         })),
     ];
 
-    const cy = cytoscape({
-      container: containerRef.current,
-      elements,
-      style: [
-        {
+    // Cytoscape's TS style typings disagree between minor versions over which
+    // properties accept numbers vs strings (e.g. `padding`, `font-size`).
+    // Cast the whole stylesheet to any so the build is stable across envs.
+    const stylesheet: unknown[] = ([
+      {
           selector: 'node',
           style: {
             'background-color': 'data(color)',
-            // @ts-expect-error data() for shape works at runtime
             shape: 'data(shape)',
             'border-color': '#0a0a0a',
             'border-width': 2,
@@ -325,7 +324,6 @@ export default function GraphPage() {
             'text-valign': 'top',
             'text-halign': 'center',
             'text-margin-y': -6,
-            // @ts-expect-error cytoscape accepts numeric padding for compound
             padding: 18,
             shape: 'round-rectangle',
           },
@@ -434,7 +432,13 @@ export default function GraphPage() {
           selector: 'edge:selected',
           style: { 'line-color': '#f5b301', 'target-arrow-color': '#f5b301', opacity: 1 },
         },
-      ],
+      ] as unknown as unknown[]);
+
+    const cy = cytoscape({
+      container: containerRef.current,
+      elements,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      style: stylesheet as any,
       layout: {
         name: 'fcose',
         // @ts-expect-error fcose options not in core types
