@@ -34,6 +34,9 @@ export interface ExtractedMetadata {
   actions: ExtractedAction[];
   source_extracted_at: string;
   extraction_method: 'heuristic' | 'llm' | 'mixed' | 'manual';
+  canonical_url?: string | null;
+  word_count?: number | null;
+  reading_time_minutes?: number | null;
 }
 
 export interface MockNode {

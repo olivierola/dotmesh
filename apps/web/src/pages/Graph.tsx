@@ -1131,6 +1131,39 @@ function SidePanel({
               <span className="text-right text-neutral-300">{lang}</span>
             </div>
           )}
+          {extracted?.reading_time_minutes != null && (
+            <div className="flex justify-between gap-3">
+              <span className="text-neutral-500">Reading time</span>
+              <span className="text-right text-neutral-300">
+                ~{extracted.reading_time_minutes} min
+                {extracted.word_count
+                  ? ` · ${extracted.word_count.toLocaleString()} words`
+                  : ''}
+              </span>
+            </div>
+          )}
+          {extracted?.canonical_url &&
+            extracted.canonical_url !== node.source_url && (
+              <div className="flex justify-between gap-3">
+                <span className="text-neutral-500">Canonical</span>
+                <a
+                  href={extracted.canonical_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="truncate text-right text-accent hover:underline"
+                  title={extracted.canonical_url}
+                >
+                  {(() => {
+                    try {
+                      const u = new URL(extracted.canonical_url!);
+                      return u.hostname + u.pathname.slice(0, 30);
+                    } catch {
+                      return extracted.canonical_url;
+                    }
+                  })()}
+                </a>
+              </div>
+            )}
           {siteName && (
             <div className="flex justify-between gap-3">
               <span className="text-neutral-500">Source app</span>

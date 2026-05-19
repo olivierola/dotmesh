@@ -51,6 +51,13 @@ export interface Extracted {
   actions: ExtractedAction[];
   source_extracted_at: string;
   extraction_method: 'heuristic' | 'llm' | 'mixed' | 'manual';
+  /** <link rel="canonical"> if present — used by process-node to dedup pages
+   *  across mirrors (twitter.com vs x.com, AMP, locale-prefixed, etc.). */
+  canonical_url?: string | null;
+  /** Word count of `content` after cleaning. */
+  word_count?: number | null;
+  /** Estimated reading time in minutes (230 wpm), null when not text-like. */
+  reading_time_minutes?: number | null;
 }
 
 const MAX_CONTENT_CHARS = 8000;
@@ -165,6 +172,121 @@ function findHeading(el: HTMLElement): string | null {
   return text && text.length > 2 ? text : null;
 }
 
+/** rel=canonical → stable URL for dedup across mirrors / AMP / locale prefixes. */
+function canonicalUrl(): string | null {
+  const link = document.querySelector<HTMLLinkElement>('link[rel="canonical"]');
+  const href = link?.href?.trim();
+  if (!href) return null;
+  try {
+    const u = new URL(href);
+    u.hash = '';
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Best-effort author detection that goes beyond the basic meta tags.
+ * Tries, in order:
+ *   - JSON-LD author (already covered upstream),
+ *   - <meta name="author|byl|dc.creator">,
+ *   - <link rel="author">,
+ *   - elements with rel="author" / class containing "author"/"byline",
+ *   - <address class="author">.
+ */
+function findAuthor(): string | null {
+  const meta =
+    metaContent('author') ??
+    metaContent('byl') ??
+    metaContent('byline') ??
+    metaContent('dc.creator') ??
+    metaContent('article:author') ??
+    og('article:author');
+  if (meta) return meta.trim();
+
+  const relAuthor = document.querySelector<HTMLAnchorElement>('a[rel="author"], link[rel="author"]');
+  const relText = relAuthor?.textContent?.trim() || relAuthor?.getAttribute('title')?.trim();
+  if (relText) return relText;
+
+  const candidates = document.querySelectorAll<HTMLElement>(
+    [
+      '[itemprop="author"]',
+      '[itemprop="name"][itemtype*="Person" i]',
+      '.byline',
+      '.author',
+      '.post-author',
+      '.entry-author',
+      'address.author',
+      'address[rel="author"]',
+    ].join(','),
+  );
+  for (const el of Array.from(candidates).slice(0, 5)) {
+    const text = (el.textContent ?? '').replace(/\s+/g, ' ').trim();
+    if (text.length >= 2 && text.length <= 80 && !/^(by|par|de)\s*$/i.test(text)) {
+      // Strip leading "By " / "Par " prefixes some bylines carry.
+      return text.replace(/^(by|par|de)\s+/i, '');
+    }
+  }
+  return null;
+}
+
+/**
+ * Pick the most likely body container on the page.
+ *
+ * Heuristic: prefer semantic landmarks (<article>, [role=article], <main>),
+ * then fall back to the element with the highest paragraph density × text
+ * length score among page-level containers. Avoids picking <nav>, <aside>,
+ * <header>, <footer> — these are penalised even if they contain text.
+ */
+function pickBodyRoot(): HTMLElement {
+  const semantic = document.querySelector<HTMLElement>(
+    'article, [role="article"], main, [role="main"], [itemprop="articleBody"]',
+  );
+  if (semantic && (semantic.textContent ?? '').length > 200) return semantic;
+
+  const NEGATIVE = /(^|\s)(nav|aside|header|footer|sidebar|comment|menu|ad|advert|cookie|banner|promo)(\s|$)/i;
+  const blocks = document.querySelectorAll<HTMLElement>('section, div, main');
+  let best: HTMLElement | null = null;
+  let bestScore = 0;
+  for (const b of Array.from(blocks)) {
+    if (NEGATIVE.test(b.className) || NEGATIVE.test(b.id)) continue;
+    const ps = b.querySelectorAll('p');
+    if (ps.length < 2) continue;
+    const text = (b.textContent ?? '').length;
+    if (text < 400) continue;
+    const score = text * Math.log(1 + ps.length);
+    if (score > bestScore) {
+      bestScore = score;
+      best = b;
+    }
+  }
+  return best ?? document.body;
+}
+
+/**
+ * Clean the textContent of a container: drop scripts/styles/forms/ads, keep
+ * paragraph-like flow and collapse whitespace.
+ */
+function readBodyText(root: HTMLElement, maxLen: number): string {
+  const clone = root.cloneNode(true) as HTMLElement;
+  clone
+    .querySelectorAll(
+      'script, style, noscript, svg, form, button, nav, aside, header, footer, [data-mesh-ui], [class*="ad-" i], [class*="advert" i], [class*="cookie" i], [class*="banner" i]',
+    )
+    .forEach((n) => n.parentNode?.removeChild(n));
+  return (clone.textContent ?? '')
+    .replace(/[ \t ]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .slice(0, maxLen);
+}
+
+function countWords(text: string | null): number {
+  if (!text) return 0;
+  return (text.match(/\b[\p{L}\p{N}'-]+\b/gu) ?? []).length;
+}
+
 /**
  * Page-level base extraction — same for every capture on this page.
  */
@@ -188,12 +310,7 @@ export function extractPageBase(): Omit<
     (ld[0]?.description as string | undefined) ??
     null;
 
-  const author =
-    ldAuthor(ld) ??
-    metaContent('author') ??
-    metaContent('article:author') ??
-    og('article:author') ??
-    null;
+  const author = ldAuthor(ld) ?? findAuthor();
 
   const site_name = og('site_name') ?? window.location.hostname;
 
@@ -201,10 +318,12 @@ export function extractPageBase(): Omit<
     ldPublished(ld) ??
     metaContent('article:published_time') ??
     og('article:published_time') ??
+    metaContent('date') ??
     null;
 
   const lang = languageFromDom();
   const keywords = keywordsFromDom();
+  const canonical = canonicalUrl();
 
   return {
     title: title?.trim() || null,
@@ -216,6 +335,9 @@ export function extractPageBase(): Omit<
     keywords,
     source_extracted_at: new Date().toISOString(),
     extraction_method: 'heuristic',
+    canonical_url: canonical,
+    word_count: null,
+    reading_time_minutes: null,
   };
 }
 
@@ -321,6 +443,7 @@ export function extractFromElement(
   // text / heading / list-item / generic
   const text = (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, MAX_CONTENT_CHARS);
   const heading = findHeading(el);
+  const words = countWords(text);
   return {
     ...base,
     node_type: 'text',
@@ -330,23 +453,20 @@ export function extractFromElement(
     media_url: null,
     media_thumbnail: null,
     actions,
+    word_count: words || null,
+    reading_time_minutes: words > 30 ? Math.max(1, Math.round(words / 230)) : null,
   };
 }
 
 /**
  * Whole-page capture (used by "Save this page" context menu / quick capture).
+ * Uses pickBodyRoot + readBodyText for a cleaner body than dumping <body>.
  */
 export function extractPage(): Extracted {
   const base = extractPageBase();
-  // Best-effort body text: prefer <article>, fall back to <main>, then body.
-  const root =
-    document.querySelector('article') ??
-    document.querySelector('main') ??
-    document.body;
-  const content = (root?.textContent ?? '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, MAX_CONTENT_CHARS);
+  const root = pickBodyRoot();
+  const content = readBodyText(root, MAX_CONTENT_CHARS);
+  const words = countWords(content);
   const ogImage = og('image') ?? twitter('image') ?? null;
   return {
     ...base,
@@ -355,6 +475,8 @@ export function extractPage(): Extracted {
     media_url: null,
     media_thumbnail: ogImage,
     actions: [{ kind: 'save', value: 'page', at: new Date().toISOString() }],
+    word_count: words || null,
+    reading_time_minutes: words > 0 ? Math.max(1, Math.round(words / 230)) : null,
   };
 }
 

@@ -64,9 +64,15 @@ function normalizeUrl(url: string | null | undefined): string | null {
 /**
  * Get-or-create the canonical "page" node for a URL.
  * Returns the page node id, or null if we can't find a stable URL.
+ *
+ * Prefers `extracted.canonical_url` (<link rel="canonical">) over the raw
+ * source_url so mirrors / AMP / locale-prefixed variants share the same
+ * page node.
  */
 async function ensurePageNode(ctx: Ctx, url: string | null): Promise<string | null> {
-  const canonical = normalizeUrl(url);
+  const explicitCanonical =
+    (ctx.extracted as { canonical_url?: string | null }).canonical_url ?? null;
+  const canonical = normalizeUrl(explicitCanonical ?? url);
   if (!canonical) return null;
 
   // If THIS node is itself a page capture of this URL, it IS the page node.
