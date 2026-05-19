@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import cytoscape, { type Core, type ElementDefinition } from 'cytoscape';
+import cytoscape, {
+  type Core,
+  type ElementDefinition,
+  type EventObject,
+  type EdgeSingular,
+  type NodeSingular,
+} from 'cytoscape';
 import fcose from 'cytoscape-fcose';
 import { useQuery } from '@tanstack/react-query';
 import { format, formatDistanceToNow } from 'date-fns';
@@ -319,6 +325,7 @@ export default function GraphPage() {
             'text-valign': 'top',
             'text-halign': 'center',
             'text-margin-y': -6,
+            // @ts-expect-error cytoscape accepts numeric padding for compound
             padding: 18,
             shape: 'round-rectangle',
           },
@@ -468,23 +475,61 @@ export default function GraphPage() {
       if (evt.target === cy) setSelected(null);
     });
 
-    // ----- "Floating" feel: while you drag a node, its connected neighbours
-    // get pulled gently toward it (spring relax). For compound parents this
-    // is unnecessary — Cytoscape already drags their children rigidly.
-    cy.on('drag', 'node', (evt) => {
+    // ----- Drag behaviour -----
+    // Cytoscape doesn't automatically move a compound parent's children when
+    // you drag the parent. We do it ourselves by tracking the parent's
+    // position delta between drag ticks and applying the same delta to each
+    // descendant. This gives the user a rigid "drag the group" feel.
+    //
+    // For non-parent nodes we keep the floating-spring relax that gently
+    // tugs connected neighbours toward the dragged node.
+    const lastParentPos = new Map<string, { x: number; y: number }>();
+
+    cy.on('grab', 'node[isHub]', (evt) => {
+      const p = evt.target.position();
+      lastParentPos.set(evt.target.id(), { x: p.x, y: p.y });
+    });
+
+    cy.on('drag', 'node[isHub]', (evt: EventObject) => {
+      const parent = evt.target;
+      const prev = lastParentPos.get(parent.id());
+      const cur = parent.position();
+      if (!prev) {
+        lastParentPos.set(parent.id(), { x: cur.x, y: cur.y });
+        return;
+      }
+      const dx = cur.x - prev.x;
+      const dy = cur.y - prev.y;
+      if (dx === 0 && dy === 0) return;
+      // Move every descendant by the same delta.
+      parent.descendants().forEach((child: NodeSingular) => {
+        if (child.id() === parent.id()) return;
+        const cp = child.position();
+        child.position({ x: cp.x + dx, y: cp.y + dy });
+      });
+      lastParentPos.set(parent.id(), { x: cur.x, y: cur.y });
+    });
+
+    cy.on('free', 'node[isHub]', (evt) => {
+      lastParentPos.delete(evt.target.id());
+    });
+
+    // Non-parent drag: floating spring relax on connected neighbours.
+    cy.on('drag', 'node', (evt: EventObject) => {
       const n = evt.target;
-      if (n.data('isHub')) return; // children move via the compound — skip.
+      if (n.data('isHub')) return; // handled above
       const px = n.position('x');
       const py = n.position('y');
-      const k = 0.08; // spring strength — subtle
-      n.connectedEdges().forEach((edge) => {
-        const other = edge.source().id() === n.id() ? edge.target() : edge.source();
+      const k = 0.012; // subtle pull
+      n.connectedEdges().forEach((edge: EdgeSingular) => {
+        const other =
+          edge.source().id() === n.id() ? edge.target() : edge.source();
         if (!other || other.id() === n.id()) return;
-        if (other.data('isHub')) return; // never tug the parent box around
+        if (other.data('isHub')) return;
         if (other.grabbed && other.grabbed()) return;
         const ox = other.position('x');
         const oy = other.position('y');
-        other.position({ x: ox + (px - ox) * k * 0.15, y: oy + (py - oy) * k * 0.15 });
+        other.position({ x: ox + (px - ox) * k, y: oy + (py - oy) * k });
       });
     });
 
