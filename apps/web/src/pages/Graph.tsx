@@ -314,9 +314,11 @@ export default function GraphPage() {
     cy.batch(() => {
       cy.nodes().forEach((n: NodeSingular) => {
         if (n.data('isHub')) {
-          // Hide hubs whose descendants are all out of the lineage set.
-          const anyKept =
-            n.descendants().filter((d: NodeSingular) => keep.has(d.id())).length > 0;
+          // Hub stays visible as long as at least one of its connected leaves
+          // is in the lineage keep set.
+          const anyKept = n
+            .neighborhood('node')
+            .filter((m: NodeSingular) => keep.has(m.id())).length > 0;
           n.style('display', anyKept ? 'element' : 'none');
           return;
         }
@@ -325,7 +327,13 @@ export default function GraphPage() {
       cy.edges().forEach((e: EdgeSingular) => {
         const s = e.source().id();
         const t = e.target().id();
-        e.style('display', keep.has(s) && keep.has(t) ? 'element' : 'none');
+        // Hub-edges follow their leaf visibility; everything else needs both
+        // endpoints in the lineage set.
+        const sHub = e.source().data('isHub');
+        const tHub = e.target().data('isHub');
+        const sOk = sHub || keep.has(s);
+        const tOk = tHub || keep.has(t);
+        e.style('display', sOk && tOk ? 'element' : 'none');
       });
     });
     // Fit to what's left
@@ -357,10 +365,12 @@ export default function GraphPage() {
     const realNodes = data.nodes;
     const nodesById = new Map(realNodes.map((n) => [n.id, n]));
 
-    // ----- Compound parents per source domain -----
-    // Each captured node has a `parent` data pointing to a hub. Drag a hub →
-    // every child moves with it (native Cytoscape behaviour). Hubs render as
-    // a faint outlined area around their children.
+    // ----- Site hubs as regular nodes (not Cytoscape compound parents) -----
+    // We tried compound parents earlier but Cytoscape's compound layout was
+    // fragile: a stylesheet property mismatch silently fell back to a grid
+    // layout and the whole graph became unreadable. So hubs are regular
+    // nodes connected to their members via faint `hubEdge` edges, and we
+    // implement rigid group-drag ourselves in the `drag` handler.
     const hubMembers = new Map<string, string[]>();
     for (const n of realNodes) {
       const k = hubKey(n);
@@ -370,9 +380,9 @@ export default function GraphPage() {
       hubMembers.set(k, arr);
     }
 
-    // Map node id → hub id (so we can attach `parent` to each node).
-    const parentByNode = new Map<string, string>();
     const hubElements: ElementDefinition[] = [];
+    const hubEdges: ElementDefinition[] = [];
+    const membersByHub = new Map<string, string[]>();
     for (const [key, members] of hubMembers) {
       if (members.length === 0) continue;
       const hubId = `hub:${key}`;
@@ -381,32 +391,40 @@ export default function GraphPage() {
           id: hubId,
           label: hubLabel(key),
           color: HUB_COLOR,
-          shape: 'round-rectangle',
+          shape: 'hexagon',
           isHub: true,
           degree: members.length,
         },
       });
-      for (const nid of members) parentByNode.set(nid, hubId);
+      membersByHub.set(hubId, members);
+      for (const nid of members) {
+        hubEdges.push({
+          data: {
+            id: `${hubId}->${nid}`,
+            source: hubId,
+            target: nid,
+            relation: 'origin',
+            confidence: 0.4,
+            label: '',
+            isHubEdge: true,
+          },
+        });
+      }
     }
 
     const elements: ElementDefinition[] = [
-      // Parents must appear before children for Cytoscape's compound layout.
       ...hubElements,
-      ...realNodes.map((n) => {
-        const parent = parentByNode.get(n.id);
-        return {
-          data: {
-            id: n.id,
-            label: shortLabel(n),
-            color: pickColor(n, colorMode, collectionById),
-            shape: nodeShape(n),
-            source: n.source,
-            nodeType: effectiveNodeType(n),
-            isHub: false,
-            ...(parent ? { parent } : {}),
-          },
-        };
-      }),
+      ...realNodes.map((n) => ({
+        data: {
+          id: n.id,
+          label: shortLabel(n),
+          color: pickColor(n, colorMode, collectionById),
+          shape: nodeShape(n),
+          source: n.source,
+          nodeType: effectiveNodeType(n),
+          isHub: false,
+        },
+      })),
       ...data.edges
         .filter((e) => nodesById.has(e.from_node) && nodesById.has(e.to_node))
         .map((e) => ({
@@ -420,6 +438,7 @@ export default function GraphPage() {
             isHubEdge: false,
           },
         })),
+      ...hubEdges,
     ];
 
     // Cytoscape's TS style typings disagree between minor versions over which
@@ -455,23 +474,22 @@ export default function GraphPage() {
           },
         },
         {
-          // Compound parent = a faint rounded box around its children,
-          // labelled at the top. Drag this and all children follow.
+          // Site hub = a yellow hexagon labelled with the domain. We drag
+          // its members manually in the `drag` handler below.
           selector: 'node[?isHub]',
           style: {
             'background-color': HUB_COLOR,
-            'background-opacity': 0.06,
-            'border-color': HUB_COLOR,
-            'border-opacity': 0.5,
-            'border-width': 1.5,
-            'font-size': 12,
+            'border-color': '#fef3c7',
+            'border-width': 3,
+            'font-size': 13,
             'font-weight': 700,
             color: '#fde68a',
-            'text-valign': 'top',
+            'text-valign': 'bottom',
             'text-halign': 'center',
-            'text-margin-y': -6,
-            padding: 18,
-            shape: 'round-rectangle',
+            'text-margin-y': 10,
+            shape: 'hexagon',
+            width: 'mapData(degree, 2, 30, 38, 80)',
+            height: 'mapData(degree, 2, 30, 38, 80)',
           },
         },
         {
@@ -591,16 +609,14 @@ export default function GraphPage() {
         quality: 'proof',
         animate: false,
         randomize: true,
-        nodeRepulsion: 55000,
-        idealEdgeLength: 140,
-        edgeElasticity: 0.35,
-        gravity: 0.25,
-        gravityRangeCompound: 1.5,
-        gravityCompound: 1.0,
-        nestingFactor: 0.4,
-        padding: 50,
-        nodeSeparation: 180,
-        nodeOverlap: 20,
+        nodeRepulsion: 45000,
+        idealEdgeLength: 180,
+        edgeElasticity: 0.3,
+        gravity: 0.1,
+        gravityRange: 2.5,
+        padding: 60,
+        nodeSeparation: 220,
+        nodeOverlap: 30,
         uniformNodeDimensions: false,
         tile: false,
         fit: true,
@@ -614,7 +630,7 @@ export default function GraphPage() {
       const id = evt.target.id() as string;
       if (id.startsWith('hub:')) {
         // Clicking a hub focuses its cluster — center + zoom
-        const neighbors = evt.target.descendants().union(evt.target.neighborhood());
+        const neighbors = evt.target.neighborhood();
         cy.animate({ fit: { eles: evt.target.union(neighbors), padding: 60 }, duration: 380 });
         setSelected(null);
         return;
@@ -626,42 +642,39 @@ export default function GraphPage() {
     });
 
     // ----- Drag behaviour -----
-    // Cytoscape doesn't automatically move a compound parent's children when
-    // you drag the parent. We do it ourselves by tracking the parent's
-    // position delta between drag ticks and applying the same delta to each
-    // descendant. This gives the user a rigid "drag the group" feel.
-    //
-    // For non-parent nodes we keep the floating-spring relax that gently
-    // tugs connected neighbours toward the dragged node.
-    const lastParentPos = new Map<string, { x: number; y: number }>();
+    // Hubs aren't Cytoscape compound parents — we move their members
+    // manually so the user still gets a rigid group-drag feel.
+    const lastHubPos = new Map<string, { x: number; y: number }>();
 
     cy.on('grab', 'node[?isHub]', (evt) => {
       const p = evt.target.position();
-      lastParentPos.set(evt.target.id(), { x: p.x, y: p.y });
+      lastHubPos.set(evt.target.id(), { x: p.x, y: p.y });
     });
 
     cy.on('drag', 'node[?isHub]', (evt: EventObject) => {
-      const parent = evt.target;
-      const prev = lastParentPos.get(parent.id());
-      const cur = parent.position();
+      const hub = evt.target;
+      const prev = lastHubPos.get(hub.id());
+      const cur = hub.position();
       if (!prev) {
-        lastParentPos.set(parent.id(), { x: cur.x, y: cur.y });
+        lastHubPos.set(hub.id(), { x: cur.x, y: cur.y });
         return;
       }
       const dx = cur.x - prev.x;
       const dy = cur.y - prev.y;
       if (dx === 0 && dy === 0) return;
-      // Move every descendant by the same delta.
-      parent.descendants().forEach((child: NodeSingular) => {
-        if (child.id() === parent.id()) return;
+      const memberIds = membersByHub.get(hub.id()) ?? [];
+      for (const mid of memberIds) {
+        const child = cy.getElementById(mid);
+        if (!child || child.length === 0) continue;
+        if (child.grabbed && child.grabbed()) continue;
         const cp = child.position();
         child.position({ x: cp.x + dx, y: cp.y + dy });
-      });
-      lastParentPos.set(parent.id(), { x: cur.x, y: cur.y });
+      }
+      lastHubPos.set(hub.id(), { x: cur.x, y: cur.y });
     });
 
     cy.on('free', 'node[?isHub]', (evt) => {
-      lastParentPos.delete(evt.target.id());
+      lastHubPos.delete(evt.target.id());
     });
 
     // Non-parent drag: floating spring relax on connected neighbours.
