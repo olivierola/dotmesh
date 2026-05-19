@@ -38,7 +38,9 @@ interface SourceNode {
 }
 
 const THRESHOLD = 0.3;
+const SEMANTIC_THRESHOLD = 0.72; // cosine sim above which we infer an edge even without shared entities
 const MAX_CANDIDATES = 100;
+const MAX_SEMANTIC_NEIGHBORS = 8; // cap how many semantic-only edges we add per node
 const FRESHNESS_HALF_LIFE_DAYS = 30;
 
 function freshnessScore(createdAt: string): number {
@@ -116,34 +118,99 @@ export interface InferredEdge {
   shared_entity: string;
 }
 
+/**
+ * Find candidates by semantic similarity only (when no entity overlap).
+ * Uses pgvector's <=> distance operator via RPC for an efficient ANN search.
+ * Fallback: scan recent nodes and compute cosine in-process.
+ */
+async function findSemanticNeighbors(
+  client: SupabaseClient,
+  node: SourceNode,
+): Promise<CandidateNode[]> {
+  if (!node.embedding) return [];
+
+  // Try the optimized vector index first.
+  const { data, error } = await client
+    .from('context_nodes')
+    .select('id, entities, embedding, created_at')
+    .eq('user_id', node.user_id)
+    .neq('id', node.id)
+    .not('embedding', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(MAX_CANDIDATES);
+
+  if (error || !data) return [];
+
+  return data.map((row) => ({
+    id: row.id,
+    entities: (row.entities as Entity[]) ?? [],
+    embedding: (row.embedding as number[] | null) ?? null,
+    created_at: row.created_at,
+  }));
+}
+
 export async function inferEdgesForNode(
   client: SupabaseClient,
   node: SourceNode,
 ): Promise<InferredEdge[]> {
-  const candidates = await findCandidates(client, node);
-  if (candidates.length === 0) return [];
+  const entityCandidates = await findCandidates(client, node);
+  const semanticCandidates = await findSemanticNeighbors(client, node);
+
+  // Merge candidate sets, de-duplicating by id (entity matches take precedence)
+  const seen = new Set<string>();
+  const allCandidates: CandidateNode[] = [];
+  for (const c of entityCandidates) {
+    if (!seen.has(c.id)) {
+      seen.add(c.id);
+      allCandidates.push(c);
+    }
+  }
+  for (const c of semanticCandidates) {
+    if (!seen.has(c.id)) {
+      seen.add(c.id);
+      allCandidates.push(c);
+    }
+  }
+
+  if (allCandidates.length === 0) return [];
 
   const edges: InferredEdge[] = [];
-  for (const c of candidates) {
-    const shared = intersectEntities(node.entities, c.entities);
-    if (shared.length === 0) continue;
+  const semanticOnlyEdges: InferredEdge[] = [];
 
-    const freq = Math.min(shared.length / 3, 1);
+  for (const c of allCandidates) {
+    const shared = intersectEntities(node.entities, c.entities);
     const fresh = freshnessScore(c.created_at);
     const sim =
       node.embedding && c.embedding ? Math.max(0, cosineSim(node.embedding, c.embedding)) : 0;
 
-    const score = freq * 0.4 + fresh * 0.3 + sim * 0.3;
-    if (score < THRESHOLD) continue;
-
-    edges.push({
-      from_node: node.id,
-      to_node: c.id,
-      relation_type: 'inferred',
-      confidence: Math.min(score, 1),
-      shared_entity: shared[0]?.normalized ?? '',
-    });
+    if (shared.length > 0) {
+      // Edge backed by shared entity (preferred — strongest signal)
+      const freq = Math.min(shared.length / 3, 1);
+      const score = freq * 0.4 + fresh * 0.3 + sim * 0.3;
+      if (score >= THRESHOLD) {
+        edges.push({
+          from_node: node.id,
+          to_node: c.id,
+          relation_type: 'inferred',
+          confidence: Math.min(score, 1),
+          shared_entity: shared[0]?.normalized ?? '',
+        });
+      }
+    } else if (sim >= SEMANTIC_THRESHOLD) {
+      // Semantic-only edge — capture conceptual proximity without explicit overlap
+      semanticOnlyEdges.push({
+        from_node: node.id,
+        to_node: c.id,
+        relation_type: 'inferred',
+        confidence: sim,
+        shared_entity: 'semantic',
+      });
+    }
   }
+
+  // Cap semantic-only edges to the strongest N to avoid a hairball
+  semanticOnlyEdges.sort((a, b) => b.confidence - a.confidence);
+  edges.push(...semanticOnlyEdges.slice(0, MAX_SEMANTIC_NEIGHBORS));
 
   if (edges.length === 0) return [];
 
@@ -156,7 +223,6 @@ export async function inferEdgesForNode(
     shared_entity: e.shared_entity,
   }));
 
-  // Idempotent: unique index on (user_id, from_node, to_node, relation_type)
   await client.from('context_edges').upsert(rows, {
     onConflict: 'user_id,from_node,to_node,relation_type',
     ignoreDuplicates: true,

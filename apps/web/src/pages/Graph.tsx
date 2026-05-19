@@ -268,24 +268,21 @@ export default function GraphPage() {
       ],
       layout: {
         name: 'fcose',
-        // @ts-expect-error fcose options
+        // @ts-expect-error fcose options not in core types
         quality: 'proof',
         animate: false,
+        randomize: true,
         nodeRepulsion: 45000,
-        idealEdgeLength: (edge: cytoscape.EdgeSingular) =>
-          edge.data('isHubEdge') ? 100 : 180,
+        idealEdgeLength: 180,
         edgeElasticity: 0.3,
         gravity: 0.1,
         gravityRange: 2.5,
         padding: 60,
-        randomize: true,
         nodeSeparation: 220,
-        // Discourage overlap aggressively
         nodeOverlap: 30,
         uniformNodeDimensions: false,
-        // Group nodes by hub via implicit cluster discovery
-        relationships: [],
         tile: false,
+        fit: true,
       },
       wheelSensitivity: 0.2,
       minZoom: 0.2,
