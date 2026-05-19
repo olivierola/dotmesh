@@ -1,19 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import cytoscape, {
-  type Core,
-  type ElementDefinition,
-  type EventObject,
-  type EdgeSingular,
-  type NodeSingular,
-} from 'cytoscape';
-import fcose from 'cytoscape-fcose';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format, formatDistanceToNow } from 'date-fns';
 import { api, type GraphCollection } from '@/lib/api-client';
 import type { MockNode, MockEdge } from '@/lib/mock';
 import { Skeleton } from '@/components/Skeleton';
-
-cytoscape.use(fcose);
+import ForceGraphCanvas, {
+  buildCanvasData,
+  type CanvasNode,
+} from '@/components/ForceGraphCanvas';
 
 const FALLBACK_PALETTE = [
   '#60a5fa', '#a78bfa', '#34d399', '#f87171', '#fbbf24',
@@ -133,18 +127,6 @@ function pickColor(
   return FALLBACK_PALETTE[hashIndex(key, FALLBACK_PALETTE.length)] ?? ORPHAN_COLOR;
 }
 
-function nodeShape(node: MockNode): string {
-  const t = effectiveNodeType(node);
-  if (t === 'image') return 'round-rectangle';
-  if (t === 'video') return 'cut-rectangle';
-  if (t === 'code') return 'round-diamond';
-  if (t === 'link') return 'round-triangle';
-  if (t === 'page') return 'round-octagon';
-  if (t === 'quote') return 'round-pentagon';
-  if (t === 'action') return 'star';
-  return 'ellipse';
-}
-
 // Pretty short title for a node label under the dot.
 function shortLabel(n: MockNode): string {
   const md = n.metadata ?? {};
@@ -189,8 +171,6 @@ function hubLabel(key: string): string {
 }
 
 export default function GraphPage() {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const cyRef = useRef<Core | null>(null);
   const [selected, setSelected] = useState<MockNode | null>(null);
   const [colorMode, setColorMode] = useState<ColorMode>('type');
   const [lineageFocus, setLineageFocus] = useState<string | null>(null);
@@ -269,439 +249,69 @@ export default function GraphPage() {
     return links;
   }, [selected, data, nodeById]);
 
-  // ----- Lineage focus: hide everything that isn't an ancestor or
-  // descendant of the focused node, walking belongs_to_page +
-  // navigated_from edges in both directions.
-  useEffect(() => {
-    const cy = cyRef.current;
-    if (!cy) return;
-    if (!lineageFocus || !data) {
-      cy.elements().removeClass('lineage-dim');
-      cy.elements().style('display', 'element');
-      return;
-    }
-    const HIER_RELS = new Set(['belongs_to_page', 'navigated_from']);
-    const adjFrom = new Map<string, string[]>(); // parent → children
-    const adjTo = new Map<string, string[]>();   // child → parents
+  // Lineage focus: ids of all ancestors + descendants of the focused node
+  // via belongs_to_page / navigated_from edges. `null` = no focus, show all.
+  const lineageKeep: Set<string> | null = useMemo(() => {
+    if (!lineageFocus || !data) return null;
+    const HIER = new Set(['belongs_to_page', 'navigated_from']);
+    const adjFrom = new Map<string, string[]>();
+    const adjTo = new Map<string, string[]>();
     for (const e of data.edges) {
-      if (!HIER_RELS.has(e.relation_type)) continue;
+      if (!HIER.has(e.relation_type)) continue;
       (adjFrom.get(e.from_node) ?? adjFrom.set(e.from_node, []).get(e.from_node)!).push(e.to_node);
       (adjTo.get(e.to_node) ?? adjTo.set(e.to_node, []).get(e.to_node)!).push(e.from_node);
     }
     const keep = new Set<string>([lineageFocus]);
-    // BFS ancestors
-    let frontier = [lineageFocus];
-    while (frontier.length) {
-      const next: string[] = [];
-      for (const id of frontier) {
-        for (const p of adjTo.get(id) ?? []) {
-          if (!keep.has(p)) { keep.add(p); next.push(p); }
+    const walk = (start: string, adj: Map<string, string[]>) => {
+      let frontier = [start];
+      while (frontier.length) {
+        const next: string[] = [];
+        for (const id of frontier) {
+          for (const n of adj.get(id) ?? []) {
+            if (!keep.has(n)) { keep.add(n); next.push(n); }
+          }
         }
+        frontier = next;
       }
-      frontier = next;
-    }
-    // BFS descendants
-    frontier = [lineageFocus];
-    while (frontier.length) {
-      const next: string[] = [];
-      for (const id of frontier) {
-        for (const c of adjFrom.get(id) ?? []) {
-          if (!keep.has(c)) { keep.add(c); next.push(c); }
-        }
-      }
-      frontier = next;
-    }
-    cy.batch(() => {
-      cy.nodes().forEach((n: NodeSingular) => {
-        if (n.data('isHub')) {
-          // Hub stays visible as long as at least one of its connected leaves
-          // is in the lineage keep set.
-          const anyKept = n
-            .neighborhood('node')
-            .filter((m: NodeSingular) => keep.has(m.id())).length > 0;
-          n.style('display', anyKept ? 'element' : 'none');
-          return;
-        }
-        n.style('display', keep.has(n.id()) ? 'element' : 'none');
-      });
-      cy.edges().forEach((e: EdgeSingular) => {
-        const s = e.source().id();
-        const t = e.target().id();
-        // Hub-edges follow their leaf visibility; everything else needs both
-        // endpoints in the lineage set.
-        const sHub = e.source().data('isHub');
-        const tHub = e.target().data('isHub');
-        const sOk = sHub || keep.has(s);
-        const tOk = tHub || keep.has(t);
-        e.style('display', sOk && tOk ? 'element' : 'none');
-      });
-    });
-    // Fit to what's left
-    const visible = cy.elements(':visible');
-    if (visible.length > 0) {
-      cy.animate({ fit: { eles: visible, padding: 80 }, duration: 380 });
-    }
+    };
+    walk(lineageFocus, adjTo);
+    walk(lineageFocus, adjFrom);
+    return keep;
   }, [lineageFocus, data]);
 
-  // ----- Live recolor when the user flips colorMode -----
-  // We update `color` data on each node without rebuilding the whole graph
-  // so positions and momentum stay intact.
-  useEffect(() => {
-    const cy = cyRef.current;
-    if (!cy || !data) return;
-    cy.batch(() => {
-      for (const n of data.nodes) {
-        const el = cy.getElementById(n.id);
-        if (el && el.length > 0) {
-          el.data('color', pickColor(n, colorMode, collectionById));
-        }
-      }
-    });
-  }, [colorMode, data, collectionById]);
-
-  useEffect(() => {
-    if (!data || !containerRef.current) return;
-
-    const realNodes = data.nodes;
-    const nodesById = new Map(realNodes.map((n) => [n.id, n]));
-
-    // ----- Site hubs as regular nodes (not Cytoscape compound parents) -----
-    // We tried compound parents earlier but Cytoscape's compound layout was
-    // fragile: a stylesheet property mismatch silently fell back to a grid
-    // layout and the whole graph became unreadable. So hubs are regular
-    // nodes connected to their members via faint `hubEdge` edges, and we
-    // implement rigid group-drag ourselves in the `drag` handler.
+  // Build the canvas data (nodes + links + hub members) whenever the graph
+  // payload, the chosen colour mode, or collection set change. The simulation
+  // itself runs continuously inside <ForceGraphCanvas>.
+  const canvasData = useMemo(() => {
+    if (!data) return null;
     const hubMembers = new Map<string, string[]>();
-    for (const n of realNodes) {
+    for (const n of data.nodes) {
       const k = hubKey(n);
       if (!k) continue;
       const arr = hubMembers.get(k) ?? [];
       arr.push(n.id);
       hubMembers.set(k, arr);
     }
-
-    const hubElements: ElementDefinition[] = [];
-    const hubEdges: ElementDefinition[] = [];
-    const membersByHub = new Map<string, string[]>();
-    for (const [key, members] of hubMembers) {
-      if (members.length === 0) continue;
-      const hubId = `hub:${key}`;
-      hubElements.push({
-        data: {
-          id: hubId,
-          label: hubLabel(key),
-          color: HUB_COLOR,
-          shape: 'hexagon',
-          isHub: true,
-          degree: members.length,
-        },
-      });
-      membersByHub.set(hubId, members);
-      for (const nid of members) {
-        hubEdges.push({
-          data: {
-            id: `${hubId}->${nid}`,
-            source: hubId,
-            target: nid,
-            relation: 'origin',
-            confidence: 0.4,
-            label: '',
-            isHubEdge: true,
-          },
-        });
-      }
-    }
-
-    const elements: ElementDefinition[] = [
-      ...hubElements,
-      ...realNodes.map((n) => ({
-        data: {
-          id: n.id,
-          label: shortLabel(n),
-          color: pickColor(n, colorMode, collectionById),
-          shape: nodeShape(n),
-          source: n.source,
-          nodeType: effectiveNodeType(n),
-          isHub: false,
-        },
-      })),
-      ...data.edges
-        .filter((e) => nodesById.has(e.from_node) && nodesById.has(e.to_node))
-        .map((e) => ({
-          data: {
-            id: e.id,
-            source: e.from_node,
-            target: e.to_node,
-            relation: e.relation_type,
-            confidence: e.confidence,
-            label: e.shared_entity ?? '',
-            isHubEdge: false,
-          },
-        })),
-      ...hubEdges,
-    ];
-
-    // Cytoscape's TS style typings disagree between minor versions over which
-    // properties accept numbers vs strings (e.g. `padding`, `font-size`).
-    // Build the array natively (correct runtime shape) and cast at the call
-    // site only, so Cytoscape's own runtime validator gets the real objects.
-    const stylesheet = [
-      {
-          selector: 'node',
-          style: {
-            'background-color': 'data(color)',
-            shape: 'data(shape)',
-            'border-color': '#0a0a0a',
-            'border-width': 2,
-            label: 'data(label)',
-            color: '#e5e5e5',
-            'font-size': 9,
-            'font-weight': 500,
-            'font-family': 'Inter, system-ui, sans-serif',
-            'text-wrap': 'ellipsis',
-            'text-max-width': '110px',
-            'text-valign': 'bottom',
-            'text-halign': 'center',
-            'text-margin-y': 6,
-            'text-background-color': '#0a0a0a',
-            'text-background-opacity': 0.75,
-            'text-background-padding': '3px',
-            'text-background-shape': 'roundrectangle',
-            'text-events': 'no',
-            'min-zoomed-font-size': 8,
-            width: 18,
-            height: 18,
-          },
-        },
-        {
-          // Site hub = a yellow hexagon labelled with the domain. We drag
-          // its members manually in the `drag` handler below.
-          selector: 'node[?isHub]',
-          style: {
-            'background-color': HUB_COLOR,
-            'border-color': '#fef3c7',
-            'border-width': 3,
-            'font-size': 13,
-            'font-weight': 700,
-            color: '#fde68a',
-            'text-valign': 'bottom',
-            'text-halign': 'center',
-            'text-margin-y': 10,
-            shape: 'hexagon',
-            width: 'mapData(degree, 2, 30, 38, 80)',
-            height: 'mapData(degree, 2, 30, 38, 80)',
-          },
-        },
-        {
-          selector: 'node:selected',
-          style: { 'border-color': '#f5b301', 'border-width': 4 },
-        },
-        {
-          selector: 'edge',
-          style: {
-            width: 'mapData(confidence, 0, 1, 0.5, 2.5)',
-            'line-color': '#3f3f46',
-            'curve-style': 'bezier',
-            opacity: 0.6,
-            'target-arrow-shape': 'triangle',
-            'target-arrow-color': '#3f3f46',
-            'arrow-scale': 0.6,
-          },
-        },
-        {
-          selector: 'edge[?isHubEdge]',
-          style: {
-            'line-color': '#52525b',
-            'line-style': 'dashed',
-            'target-arrow-shape': 'none',
-            opacity: 0.4,
-            width: 1,
-          },
-        },
-        {
-          selector: 'edge[relation = "contradicts"]',
-          style: {
-            'line-color': '#f87171',
-            'target-arrow-color': '#f87171',
-            'line-style': 'dashed',
-            width: 2,
-          },
-        },
-        {
-          selector: 'edge[relation = "supersedes"]',
-          style: { 'line-color': '#34d399', 'target-arrow-color': '#34d399' },
-        },
-        {
-          // Hierarchical edges read top→down on canvas via fcose layering.
-          selector: 'edge[relation = "belongs_to_page"]',
-          style: {
-            'line-color': '#a78bfa',
-            'target-arrow-color': '#a78bfa',
-            width: 1.8,
-            opacity: 0.75,
-            'curve-style': 'taxi',
-            'taxi-direction': 'auto',
-          },
-        },
-        {
-          selector: 'edge[relation = "navigated_from"]',
-          style: {
-            'line-color': '#fb923c',
-            'target-arrow-color': '#fb923c',
-            'target-arrow-shape': 'triangle',
-            width: 1.5,
-            opacity: 0.7,
-            'line-style': 'dashed',
-          },
-        },
-        {
-          selector: 'edge[relation = "same_session"]',
-          style: {
-            'line-color': '#52525b',
-            'target-arrow-shape': 'none',
-            'line-style': 'dotted',
-            opacity: 0.35,
-            width: 0.8,
-          },
-        },
-        {
-          selector: 'edge[relation = "mentions"]',
-          style: {
-            'line-color': '#22d3ee',
-            'target-arrow-color': '#22d3ee',
-            width: 1.2,
-            opacity: 0.7,
-          },
-        },
-        {
-          selector: 'edge[relation = "extends"]',
-          style: {
-            'line-color': '#84cc16',
-            'target-arrow-color': '#84cc16',
-            width: 1.4,
-            opacity: 0.75,
-          },
-        },
-        {
-          selector: 'edge[relation = "cites"]',
-          style: {
-            'line-color': '#facc15',
-            'target-arrow-color': '#facc15',
-            width: 1.4,
-            opacity: 0.75,
-            'line-style': 'dashed',
-          },
-        },
-        {
-          selector: 'edge:selected',
-          style: { 'line-color': '#f5b301', 'target-arrow-color': '#f5b301', opacity: 1 },
-        },
-      ];
-
-    const cy = cytoscape({
-      container: containerRef.current,
-      elements,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      style: stylesheet as any,
-      layout: {
-        name: 'fcose',
-        // @ts-expect-error fcose options not in core types
-        quality: 'proof',
-        animate: false,
-        randomize: true,
-        nodeRepulsion: 45000,
-        idealEdgeLength: 180,
-        edgeElasticity: 0.3,
-        gravity: 0.1,
-        gravityRange: 2.5,
-        padding: 60,
-        nodeSeparation: 220,
-        nodeOverlap: 30,
-        uniformNodeDimensions: false,
-        tile: false,
-        fit: true,
+    return buildCanvasData({
+      nodes: data.nodes,
+      edges: data.edges,
+      hubMembers,
+      hubLabel,
+      hubKey,
+      hubColor: HUB_COLOR,
+      pickNodeColor: (n) => pickColor(n, colorMode, collectionById),
+      pickNodeShape: (n) => {
+        const t = effectiveNodeType(n);
+        if (t === 'image') return 'square';
+        if (t === 'video') return 'square';
+        if (t === 'code') return 'square';
+        if (t === 'link') return 'triangle';
+        if (t === 'page') return 'hex';
+        return 'circle';
       },
-      wheelSensitivity: 0.2,
-      minZoom: 0.2,
-      maxZoom: 3,
+      shortLabel,
     });
-
-    cy.on('tap', 'node', (evt) => {
-      const id = evt.target.id() as string;
-      if (id.startsWith('hub:')) {
-        // Clicking a hub focuses its cluster — center + zoom
-        const neighbors = evt.target.neighborhood();
-        cy.animate({ fit: { eles: evt.target.union(neighbors), padding: 60 }, duration: 380 });
-        setSelected(null);
-        return;
-      }
-      setSelected(nodesById.get(id) ?? null);
-    });
-    cy.on('tap', (evt) => {
-      if (evt.target === cy) setSelected(null);
-    });
-
-    // ----- Drag behaviour -----
-    // Hubs aren't Cytoscape compound parents — we move their members
-    // manually so the user still gets a rigid group-drag feel.
-    const lastHubPos = new Map<string, { x: number; y: number }>();
-
-    cy.on('grab', 'node[?isHub]', (evt) => {
-      const p = evt.target.position();
-      lastHubPos.set(evt.target.id(), { x: p.x, y: p.y });
-    });
-
-    cy.on('drag', 'node[?isHub]', (evt: EventObject) => {
-      const hub = evt.target;
-      const prev = lastHubPos.get(hub.id());
-      const cur = hub.position();
-      if (!prev) {
-        lastHubPos.set(hub.id(), { x: cur.x, y: cur.y });
-        return;
-      }
-      const dx = cur.x - prev.x;
-      const dy = cur.y - prev.y;
-      if (dx === 0 && dy === 0) return;
-      const memberIds = membersByHub.get(hub.id()) ?? [];
-      for (const mid of memberIds) {
-        const child = cy.getElementById(mid);
-        if (!child || child.length === 0) continue;
-        if (child.grabbed && child.grabbed()) continue;
-        const cp = child.position();
-        child.position({ x: cp.x + dx, y: cp.y + dy });
-      }
-      lastHubPos.set(hub.id(), { x: cur.x, y: cur.y });
-    });
-
-    cy.on('free', 'node[?isHub]', (evt) => {
-      lastHubPos.delete(evt.target.id());
-    });
-
-    // Non-parent drag: floating spring relax on connected neighbours.
-    cy.on('drag', 'node', (evt: EventObject) => {
-      const n = evt.target;
-      if (n.data('isHub')) return; // handled above
-      const px = n.position('x');
-      const py = n.position('y');
-      const k = 0.012; // subtle pull
-      n.connectedEdges().forEach((edge: EdgeSingular) => {
-        const other =
-          edge.source().id() === n.id() ? edge.target() : edge.source();
-        if (!other || other.id() === n.id()) return;
-        if (other.data('isHub')) return;
-        if (other.grabbed && other.grabbed()) return;
-        const ox = other.position('x');
-        const oy = other.position('y');
-        other.position({ x: ox + (px - ox) * k, y: oy + (py - oy) * k });
-      });
-    });
-
-    cyRef.current = cy;
-    return () => {
-      cy.destroy();
-      cyRef.current = null;
-    };
-  }, [data, collectionById]);
+  }, [data, colorMode, collectionById]);
 
   const stats = data && {
     nodes: data.nodes.length,
@@ -774,7 +384,22 @@ export default function GraphPage() {
       </header>
 
       <div className="relative flex flex-1 overflow-hidden">
-        <div ref={containerRef} className="flex-1 bg-neutral-950" />
+        <div className="flex-1 bg-neutral-950">
+          {canvasData && (
+            <ForceGraphCanvas
+              nodes={canvasData.nodes}
+              links={canvasData.links}
+              membersByHub={canvasData.membersByHub}
+              lineageKeep={lineageKeep}
+              selectedId={selected?.id ?? null}
+              onSelect={(cn: CanvasNode) => {
+                if (cn.isHub) return;
+                if (cn.raw) setSelected(cn.raw);
+              }}
+              onBackgroundClick={() => setSelected(null)}
+            />
+          )}
+        </div>
 
         {isLoading && (
           <div className="pointer-events-none absolute inset-0 grid place-items-center">
@@ -800,14 +425,6 @@ export default function GraphPage() {
             onNavigate={(id) => {
               const n = nodeById.get(id);
               if (n) setSelected(n);
-              const cy = cyRef.current;
-              if (cy) {
-                const el = cy.getElementById(id);
-                if (el && el.length > 0) {
-                  cy.animate({ fit: { eles: el, padding: 180 }, duration: 380 });
-                  el.flashClass?.('flash', 600);
-                }
-              }
             }}
             onFocusLineage={(id) => setLineageFocus(id)}
           />
