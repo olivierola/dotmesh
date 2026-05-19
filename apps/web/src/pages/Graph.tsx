@@ -424,8 +424,9 @@ export default function GraphPage() {
 
     // Cytoscape's TS style typings disagree between minor versions over which
     // properties accept numbers vs strings (e.g. `padding`, `font-size`).
-    // Cast the whole stylesheet to any so the build is stable across envs.
-    const stylesheet: unknown[] = ([
+    // Build the array natively (correct runtime shape) and cast at the call
+    // site only, so Cytoscape's own runtime validator gets the real objects.
+    const stylesheet = [
       {
           selector: 'node',
           style: {
@@ -456,7 +457,7 @@ export default function GraphPage() {
         {
           // Compound parent = a faint rounded box around its children,
           // labelled at the top. Drag this and all children follow.
-          selector: 'node[isHub]',
+          selector: 'node[?isHub]',
           style: {
             'background-color': HUB_COLOR,
             'background-opacity': 0.06,
@@ -490,7 +491,7 @@ export default function GraphPage() {
           },
         },
         {
-          selector: 'edge[isHubEdge]',
+          selector: 'edge[?isHubEdge]',
           style: {
             'line-color': '#52525b',
             'line-style': 'dashed',
@@ -577,7 +578,7 @@ export default function GraphPage() {
           selector: 'edge:selected',
           style: { 'line-color': '#f5b301', 'target-arrow-color': '#f5b301', opacity: 1 },
         },
-      ] as unknown as unknown[]);
+      ];
 
     const cy = cytoscape({
       container: containerRef.current,
@@ -634,12 +635,12 @@ export default function GraphPage() {
     // tugs connected neighbours toward the dragged node.
     const lastParentPos = new Map<string, { x: number; y: number }>();
 
-    cy.on('grab', 'node[isHub]', (evt) => {
+    cy.on('grab', 'node[?isHub]', (evt) => {
       const p = evt.target.position();
       lastParentPos.set(evt.target.id(), { x: p.x, y: p.y });
     });
 
-    cy.on('drag', 'node[isHub]', (evt: EventObject) => {
+    cy.on('drag', 'node[?isHub]', (evt: EventObject) => {
       const parent = evt.target;
       const prev = lastParentPos.get(parent.id());
       const cur = parent.position();
@@ -659,7 +660,7 @@ export default function GraphPage() {
       lastParentPos.set(parent.id(), { x: cur.x, y: cur.y });
     });
 
-    cy.on('free', 'node[isHub]', (evt) => {
+    cy.on('free', 'node[?isHub]', (evt) => {
       lastParentPos.delete(evt.target.id());
     });
 
