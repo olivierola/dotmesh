@@ -19,7 +19,7 @@
  */
 
 import { handleCorsPreflight } from '../_shared/cors.ts';
-import { createServiceClient } from '../_shared/supabase.ts';
+import { createServiceClient, assertServiceRole } from '../_shared/supabase.ts';
 import { jsonResponse, errorResponse, parseJsonBody } from '../_shared/http.ts';
 import { deepseekReason } from '../_shared/ai.ts';
 
@@ -85,8 +85,10 @@ Deno.serve(async (req) => {
   if (cors) return cors;
   if (req.method !== 'POST') return errorResponse('method_not_allowed', 405);
 
-  const auth = req.headers.get('Authorization') ?? '';
-  if (auth !== `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`) {
+  try {
+    assertServiceRole(req);
+  } catch (e) {
+    if (e instanceof Response) return e;
     return errorResponse('forbidden', 403);
   }
 

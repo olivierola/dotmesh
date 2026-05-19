@@ -29,6 +29,61 @@ export function createServiceClient(): SupabaseClient {
 }
 
 /**
+ * Decode a JWT payload (no signature verification). Used only to look up
+ * the `role` claim — we do not trust the token for anything else.
+ */
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  try {
+    const json = atob(parts[1]!.replace(/-/g, '+').replace(/_/g, '/'));
+    return JSON.parse(json) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Service-role auth guard for internal fire-and-forget calls between Edge
+ * Functions.
+ *
+ * Accepts the request if EITHER:
+ *   - the Authorization bearer matches one of the service-role secrets
+ *     known to this function (legacy SUPABASE_SERVICE_ROLE_KEY, new
+ *     publishable SUPABASE_SECRET_KEYS), OR
+ *   - the bearer is a JWT whose `role` claim is `service_role`.
+ *
+ * The second branch keeps the guard working even when the caller and
+ * callee read the env var in different forms (Supabase rotates / aliases
+ * service-role keys; comparing strings verbatim is brittle).
+ */
+export function assertServiceRole(req: Request): void {
+  const auth = req.headers.get('Authorization') ?? '';
+  const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  if (!bearer) {
+    throw new Response(JSON.stringify({ error: 'forbidden' }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const candidates = [
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'),
+    Deno.env.get('SUPABASE_SECRET_KEY'),
+    Deno.env.get('SUPABASE_SECRET_KEYS'),
+  ].filter((v): v is string => !!v);
+  if (candidates.includes(bearer)) return;
+
+  const payload = decodeJwtPayload(bearer);
+  if (payload && payload.role === 'service_role') return;
+
+  throw new Response(JSON.stringify({ error: 'forbidden' }), {
+    status: 403,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+/**
  * Resolve the authenticated user id from a request.
  * Throws 401 Response if missing or invalid.
  */

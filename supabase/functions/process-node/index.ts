@@ -17,7 +17,7 @@
  */
 
 import { handleCorsPreflight } from '../_shared/cors.ts';
-import { createServiceClient } from '../_shared/supabase.ts';
+import { createServiceClient, assertServiceRole } from '../_shared/supabase.ts';
 import { jsonResponse, errorResponse, parseJsonBody } from '../_shared/http.ts';
 import { extractEntities, summarize, jinaEmbed } from '../_shared/ai.ts';
 import { inferEdgesForNode } from '../_shared/edges.ts';
@@ -40,9 +40,12 @@ Deno.serve(async (req) => {
   if (cors) return cors;
   if (req.method !== 'POST') return errorResponse('method_not_allowed', 405);
 
-  const auth = req.headers.get('Authorization') ?? '';
-  const expected = `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`;
-  if (auth !== expected) return errorResponse('forbidden', 403);
+  try {
+    assertServiceRole(req);
+  } catch (e) {
+    if (e instanceof Response) return e;
+    return errorResponse('forbidden', 403);
+  }
 
   try {
     const { node_id } = await parseJsonBody<ProcessInput>(req);
