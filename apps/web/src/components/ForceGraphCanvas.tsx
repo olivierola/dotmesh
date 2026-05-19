@@ -132,19 +132,56 @@ export default function ForceGraphCanvas({
   // NOT recreate this object on every render (which would reset positions),
   // and we accept the small staleness because the parent already memoises
   // nodes/links per render.
+  //
+  // We also seed initial x/y for hubs and their members so the very first
+  // paint already looks organised (hubs on a ring, members clustered
+  // around their hub). d3-force only seeds at the centre by default,
+  // which produces an explosion that takes many ticks to settle.
+  useEffect(() => {
+    const hubs = nodes.filter((n) => n.isHub);
+    if (hubs.length === 0) return;
+    const ringRadius = Math.max(220, hubs.length * 80);
+    hubs.forEach((hub, i) => {
+      // Only seed if the simulation hasn't already placed this node.
+      if (typeof hub.x === 'number' && typeof hub.y === 'number') return;
+      const angle = (i / hubs.length) * Math.PI * 2;
+      hub.x = Math.cos(angle) * ringRadius;
+      hub.y = Math.sin(angle) * ringRadius;
+    });
+    // Cluster leaf nodes around their hub.
+    const hubById = new Map(hubs.map((h) => [h.id, h]));
+    if (membersByHub) {
+      for (const [hubId, memberIds] of membersByHub) {
+        const hub = hubById.get(hubId);
+        if (!hub) continue;
+        memberIds.forEach((mid, j) => {
+          const m = nodes.find((n) => n.id === mid);
+          if (!m || typeof m.x === 'number') return;
+          const a = (j / memberIds.length) * Math.PI * 2;
+          const r = 60 + Math.random() * 30;
+          m.x = (hub.x ?? 0) + Math.cos(a) * r;
+          m.y = (hub.y ?? 0) + Math.sin(a) * r;
+        });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes, membersByHub]);
+
   const graphData = useMemo(() => ({ nodes, links }), [nodes, links]);
 
   // Tune forces once the instance is ready.
+  // - Soft link force (low strength) so the user can stretch / pull edges
+  //   freely; they pop back gently rather than snapping back rigidly.
+  // - Strong charge so nodes naturally repel each other → less hairball.
   useEffect(() => {
     const fg = fgRef.current;
     if (!fg) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const link: any = fg.d3Force('link');
-    link?.distance(50).strength(0.4);
+    link?.distance(90).strength(0.08);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const charge: any = fg.d3Force('charge');
-    charge?.strength(-160);
-    // Reheat so the new forces actually apply.
+    charge?.strength(-380).distanceMax(400);
     fg.d3ReheatSimulation?.();
   }, [size.w, size.h]);
 
@@ -197,17 +234,25 @@ export default function ForceGraphCanvas({
           }}
           onNodeDragEnd={(node: unknown) => {
             const n = node as CanvasNode;
+            // Pin the node where the user dropped it so the link length the
+            // user just chose persists. d3-force still updates neighbours
+            // around it. Double-clicking a node could later unpin it.
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const o = n as any;
+            o.fx = n.x;
+            o.fy = n.y;
             if (n.isHub) {
               const members = membersByHub?.get(n.id) ?? [];
               for (const mid of members) {
                 const m = nodes.find((x) => x.id === mid);
                 if (!m) continue;
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                const o = m as any;
-                delete o.fx;
-                delete o.fy;
-                delete o.__dragOffsetX;
-                delete o.__dragOffsetY;
+                const om = m as any;
+                // Pin members at their dragged position too.
+                om.fx = m.x;
+                om.fy = m.y;
+                delete om.__dragOffsetX;
+                delete om.__dragOffsetY;
               }
             }
             dragSeed.current = null;
@@ -216,6 +261,14 @@ export default function ForceGraphCanvas({
             const n = node as CanvasNode;
             onSelect?.(n);
             fgRef.current?.centerAt?.(n.x, n.y, 600);
+          }}
+          onNodeRightClick={(node: unknown) => {
+            // Right-click releases a pinned node so d3-force takes over again.
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const o = node as any;
+            delete o.fx;
+            delete o.fy;
+            fgRef.current?.d3ReheatSimulation?.();
           }}
           onBackgroundClick={() => onBackgroundClick?.()}
           nodeCanvasObject={(node: unknown, ctx: CanvasRenderingContext2D, scale: number) => {
