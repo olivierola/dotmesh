@@ -66,9 +66,50 @@ function effectiveNodeType(node: MockNode): string {
   );
 }
 
-function nodeColor(node: MockNode): string {
-  const t = effectiveNodeType(node);
-  return TYPE_COLORS[t] ?? ORPHAN_COLOR;
+export type ColorMode = 'type' | 'collection' | 'site';
+
+function siteKeyFor(node: MockNode): string | null {
+  const host = node.source_app || (() => {
+    try {
+      return new URL(node.source_url ?? '').hostname;
+    } catch {
+      return null;
+    }
+  })();
+  if (!host) return null;
+  const parts = host.replace(/^www\./, '').split('.');
+  if (parts.length >= 2 && parts[0]) {
+    if (parts.length === 2) return parts[0].toLowerCase();
+    return parts[parts.length - 2]!.toLowerCase();
+  }
+  return host.toLowerCase();
+}
+
+/**
+ * Pick a hex color for a node according to the user-chosen dimension.
+ * Each mode is deterministic per-node so colors stay stable across renders.
+ */
+function pickColor(
+  node: MockNode,
+  mode: ColorMode,
+  collectionById: Map<string, GraphCollection>,
+): string {
+  if (mode === 'type') {
+    const t = effectiveNodeType(node);
+    return TYPE_COLORS[t] ?? ORPHAN_COLOR;
+  }
+  if (mode === 'collection') {
+    const ids = node.collection_ids ?? [];
+    const primary =
+      ids.map((id) => collectionById.get(id)).find((c) => c && !c.is_default) ??
+      ids.map((id) => collectionById.get(id)).find((c) => !!c);
+    if (primary) return colorForCollection(primary);
+    return ORPHAN_COLOR;
+  }
+  // site
+  const key = siteKeyFor(node);
+  if (!key) return ORPHAN_COLOR;
+  return FALLBACK_PALETTE[hashIndex(key, FALLBACK_PALETTE.length)] ?? ORPHAN_COLOR;
 }
 
 function nodeShape(node: MockNode): string {
@@ -130,6 +171,7 @@ export default function GraphPage() {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
   const [selected, setSelected] = useState<MockNode | null>(null);
+  const [colorMode, setColorMode] = useState<ColorMode>('type');
 
   const { data, isLoading } = useQuery({
     queryKey: ['graph'],
@@ -142,14 +184,32 @@ export default function GraphPage() {
     return m;
   }, [data?.collections]);
 
+  // ----- Live recolor when the user flips colorMode -----
+  // We update `color` data on each node without rebuilding the whole graph
+  // so positions and momentum stay intact.
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy || !data) return;
+    cy.batch(() => {
+      for (const n of data.nodes) {
+        const el = cy.getElementById(n.id);
+        if (el && el.length > 0) {
+          el.data('color', pickColor(n, colorMode, collectionById));
+        }
+      }
+    });
+  }, [colorMode, data, collectionById]);
+
   useEffect(() => {
     if (!data || !containerRef.current) return;
 
     const realNodes = data.nodes;
     const nodesById = new Map(realNodes.map((n) => [n.id, n]));
 
-    // Build hub nodes per source domain. Create a hub even with 1 member
-    // so that orphan nodes still get visual grouping by source.
+    // ----- Compound parents per source domain -----
+    // Each captured node has a `parent` data pointing to a hub. Drag a hub →
+    // every child moves with it (native Cytoscape behaviour). Hubs render as
+    // a faint outlined area around their children.
     const hubMembers = new Map<string, string[]>();
     for (const n of realNodes) {
       const k = hubKey(n);
@@ -159,49 +219,43 @@ export default function GraphPage() {
       hubMembers.set(k, arr);
     }
 
+    // Map node id → hub id (so we can attach `parent` to each node).
+    const parentByNode = new Map<string, string>();
     const hubElements: ElementDefinition[] = [];
-    const hubEdges: ElementDefinition[] = [];
     for (const [key, members] of hubMembers) {
-      if (members.length < 1) continue;
+      if (members.length === 0) continue;
       const hubId = `hub:${key}`;
       hubElements.push({
         data: {
           id: hubId,
           label: hubLabel(key),
           color: HUB_COLOR,
-          shape: 'hexagon',
+          shape: 'round-rectangle',
           isHub: true,
           degree: members.length,
         },
       });
-      for (const nid of members) {
-        hubEdges.push({
-          data: {
-            id: `${hubId}->${nid}`,
-            source: hubId,
-            target: nid,
-            relation: 'origin',
-            confidence: 0.4,
-            label: '',
-            isHubEdge: true,
-          },
-        });
-      }
+      for (const nid of members) parentByNode.set(nid, hubId);
     }
 
     const elements: ElementDefinition[] = [
-      ...realNodes.map((n) => ({
-        data: {
-          id: n.id,
-          label: shortLabel(n),
-          color: nodeColor(n),
-          shape: nodeShape(n),
-          source: n.source,
-          nodeType: effectiveNodeType(n),
-          isHub: false,
-        },
-      })),
+      // Parents must appear before children for Cytoscape's compound layout.
       ...hubElements,
+      ...realNodes.map((n) => {
+        const parent = parentByNode.get(n.id);
+        return {
+          data: {
+            id: n.id,
+            label: shortLabel(n),
+            color: pickColor(n, colorMode, collectionById),
+            shape: nodeShape(n),
+            source: n.source,
+            nodeType: effectiveNodeType(n),
+            isHub: false,
+            ...(parent ? { parent } : {}),
+          },
+        };
+      }),
       ...data.edges
         .filter((e) => nodesById.has(e.from_node) && nodesById.has(e.to_node))
         .map((e) => ({
@@ -215,7 +269,6 @@ export default function GraphPage() {
             isHubEdge: false,
           },
         })),
-      ...hubEdges,
     ];
 
     const cy = cytoscape({
@@ -251,17 +304,23 @@ export default function GraphPage() {
           },
         },
         {
+          // Compound parent = a faint rounded box around its children,
+          // labelled at the top. Drag this and all children follow.
           selector: 'node[isHub]',
           style: {
             'background-color': HUB_COLOR,
-            'border-color': '#fef3c7',
-            'border-width': 3,
-            'font-size': 13,
+            'background-opacity': 0.06,
+            'border-color': HUB_COLOR,
+            'border-opacity': 0.5,
+            'border-width': 1.5,
+            'font-size': 12,
             'font-weight': 700,
             color: '#fde68a',
-            width: 'mapData(degree, 2, 30, 38, 80)',
-            height: 'mapData(degree, 2, 30, 38, 80)',
-            'text-margin-y': 10,
+            'text-valign': 'top',
+            'text-halign': 'center',
+            'text-margin-y': -6,
+            padding: 18,
+            shape: 'round-rectangle',
           },
         },
         {
@@ -309,14 +368,16 @@ export default function GraphPage() {
         quality: 'proof',
         animate: false,
         randomize: true,
-        nodeRepulsion: 45000,
-        idealEdgeLength: 180,
-        edgeElasticity: 0.3,
-        gravity: 0.1,
-        gravityRange: 2.5,
-        padding: 60,
-        nodeSeparation: 220,
-        nodeOverlap: 30,
+        nodeRepulsion: 55000,
+        idealEdgeLength: 140,
+        edgeElasticity: 0.35,
+        gravity: 0.25,
+        gravityRangeCompound: 1.5,
+        gravityCompound: 1.0,
+        nestingFactor: 0.4,
+        padding: 50,
+        nodeSeparation: 180,
+        nodeOverlap: 20,
         uniformNodeDimensions: false,
         tile: false,
         fit: true,
@@ -330,7 +391,7 @@ export default function GraphPage() {
       const id = evt.target.id() as string;
       if (id.startsWith('hub:')) {
         // Clicking a hub focuses its cluster — center + zoom
-        const neighbors = evt.target.neighborhood();
+        const neighbors = evt.target.descendants().union(evt.target.neighborhood());
         cy.animate({ fit: { eles: evt.target.union(neighbors), padding: 60 }, duration: 380 });
         setSelected(null);
         return;
@@ -339,6 +400,26 @@ export default function GraphPage() {
     });
     cy.on('tap', (evt) => {
       if (evt.target === cy) setSelected(null);
+    });
+
+    // ----- "Floating" feel: while you drag a node, its connected neighbours
+    // get pulled gently toward it (spring relax). For compound parents this
+    // is unnecessary — Cytoscape already drags their children rigidly.
+    cy.on('drag', 'node', (evt) => {
+      const n = evt.target;
+      if (n.data('isHub')) return; // children move via the compound — skip.
+      const px = n.position('x');
+      const py = n.position('y');
+      const k = 0.08; // spring strength — subtle
+      n.connectedEdges().forEach((edge) => {
+        const other = edge.source().id() === n.id() ? edge.target() : edge.source();
+        if (!other || other.id() === n.id()) return;
+        if (other.data('isHub')) return; // never tug the parent box around
+        if (other.grabbed && other.grabbed()) return;
+        const ox = other.position('x');
+        const oy = other.position('y');
+        other.position({ x: ox + (px - ox) * k * 0.15, y: oy + (py - oy) * k * 0.15 });
+      });
     });
 
     cyRef.current = cy;
@@ -357,26 +438,46 @@ export default function GraphPage() {
   return (
     <div className="flex h-full flex-col">
       <header className="border-b border-neutral-800 bg-neutral-950 px-6 py-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-xl font-semibold">Graph Explorer</h1>
             <p className="mt-0.5 text-xs text-neutral-500">
-              Hexagons = source hubs. Color &amp; shape = entry type. Click a node for details.
+              Drag a domain group to move all its memories together. Drag a single
+              memory and its neighbours drift along.
             </p>
           </div>
-          {stats && (
-            <div className="flex gap-4 text-xs text-neutral-400">
-              <span>
-                <strong className="text-neutral-200">{stats.nodes}</strong> nodes
-              </span>
-              <span>
-                <strong className="text-neutral-200">{stats.edges}</strong> edges
-              </span>
-              <span>
-                <strong className="text-neutral-200">{stats.collections}</strong> collections
-              </span>
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-1 rounded-md border border-neutral-800 bg-neutral-900 p-0.5 text-xs">
+              <span className="px-2 text-neutral-500">Color by</span>
+              {(['type', 'collection', 'site'] as ColorMode[]).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setColorMode(m)}
+                  className={`rounded px-2 py-1 capitalize transition ${
+                    colorMode === m
+                      ? 'bg-neutral-800 text-neutral-100'
+                      : 'text-neutral-400 hover:text-neutral-200'
+                  }`}
+                >
+                  {m}
+                </button>
+              ))}
             </div>
-          )}
+            {stats && (
+              <div className="flex gap-4 text-xs text-neutral-400">
+                <span>
+                  <strong className="text-neutral-200">{stats.nodes}</strong> nodes
+                </span>
+                <span>
+                  <strong className="text-neutral-200">{stats.edges}</strong> edges
+                </span>
+                <span>
+                  <strong className="text-neutral-200">{stats.collections}</strong> collections
+                </span>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -407,34 +508,82 @@ export default function GraphPage() {
         )}
 
         {data && (
-          <div className="pointer-events-none absolute bottom-4 left-4 hidden max-w-[220px] rounded-md border border-neutral-800 bg-neutral-950/90 p-3 text-xs backdrop-blur sm:block">
-            <div className="mb-2 font-medium text-neutral-300">Entry type</div>
-            <ul className="space-y-1">
-              {Object.keys(TYPE_COLORS).map((t) => (
-                <li key={t} className="flex items-center gap-2 text-neutral-400">
-                  <span
-                    className="inline-block h-2 w-2 rounded-full"
-                    style={{ background: TYPE_COLORS[t] }}
-                  />
-                  <span>{TYPE_LABELS[t] ?? t}</span>
-                </li>
-              ))}
-            </ul>
-            <div className="mt-3 border-t border-neutral-800 pt-2 text-neutral-500">
-              <div className="flex items-center gap-2">
-                <span
-                  className="inline-block h-2 w-2"
-                  style={{
-                    background: HUB_COLOR,
-                    clipPath:
-                      'polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%)',
-                  }}
-                />
-                Source hub
-              </div>
-            </div>
-          </div>
+          <Legend
+            colorMode={colorMode}
+            collections={data.collections}
+            nodes={data.nodes}
+          />
         )}
+      </div>
+    </div>
+  );
+}
+
+function Legend({
+  colorMode,
+  collections,
+  nodes,
+}: {
+  colorMode: ColorMode;
+  collections: GraphCollection[];
+  nodes: MockNode[];
+}) {
+  const items: Array<{ label: string; color: string }> = [];
+  if (colorMode === 'type') {
+    for (const t of Object.keys(TYPE_COLORS)) {
+      items.push({ label: TYPE_LABELS[t] ?? t, color: TYPE_COLORS[t]! });
+    }
+  } else if (colorMode === 'collection') {
+    for (const c of collections.slice(0, 12)) {
+      items.push({ label: c.name, color: colorForCollection(c) });
+    }
+  } else {
+    // site — pull the most common 10 sites from the loaded nodes
+    const counts = new Map<string, number>();
+    for (const n of nodes) {
+      const k = siteKeyFor(n);
+      if (!k) continue;
+      counts.set(k, (counts.get(k) ?? 0) + 1);
+    }
+    const top = Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10);
+    for (const [k] of top) {
+      items.push({
+        label: k,
+        color:
+          FALLBACK_PALETTE[hashIndex(k, FALLBACK_PALETTE.length)] ?? ORPHAN_COLOR,
+      });
+    }
+  }
+
+  return (
+    <div className="pointer-events-none absolute bottom-4 left-4 hidden max-w-[220px] rounded-md border border-neutral-800 bg-neutral-950/90 p-3 text-xs backdrop-blur sm:block">
+      <div className="mb-2 font-medium capitalize text-neutral-300">
+        {colorMode}
+      </div>
+      <ul className="space-y-1">
+        {items.map((it) => (
+          <li key={it.label} className="flex items-center gap-2 text-neutral-400">
+            <span
+              className="inline-block h-2 w-2 rounded-full"
+              style={{ background: it.color }}
+            />
+            <span className="truncate">{it.label}</span>
+          </li>
+        ))}
+        {items.length === 0 && (
+          <li className="text-neutral-600">No data yet.</li>
+        )}
+      </ul>
+      <div className="mt-3 border-t border-neutral-800 pt-2 text-neutral-500">
+        <div className="flex items-center gap-2">
+          <span
+            className="inline-block h-2.5 w-2.5 rounded-sm border"
+            style={{ borderColor: HUB_COLOR, background: HUB_COLOR + '20' }}
+          />
+          Source group (drag to move all)
+        </div>
       </div>
     </div>
   );
