@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format, formatDistanceToNow } from 'date-fns';
 import { api, type GraphCollection } from '@/lib/api-client';
@@ -279,9 +279,10 @@ export default function GraphPage() {
     return keep;
   }, [lineageFocus, data]);
 
-  // Build the canvas data (nodes + links + hub members) whenever the graph
-  // payload, the chosen colour mode, or collection set change. The simulation
-  // itself runs continuously inside <ForceGraphCanvas>.
+  // Build the canvas data ONCE per dataset (NOT per colour-mode change).
+  // The simulation accumulates positions on these node objects; recreating
+  // them would freeze d3-force into a permanent reset loop where every
+  // colour toggle wipes positions and re-spawns at the centre.
   const canvasData = useMemo(() => {
     if (!data) return null;
     const hubMembers = new Map<string, string[]>();
@@ -299,7 +300,10 @@ export default function GraphPage() {
       hubLabel,
       hubKey,
       hubColor: HUB_COLOR,
-      pickNodeColor: (n) => pickColor(n, colorMode, collectionById),
+      // Initial colour: 'type' mode. Subsequent changes mutate `color` on
+      // the existing node objects (see effect below) without recreating
+      // anything, so positions survive.
+      pickNodeColor: (n) => pickColor(n, 'type', collectionById),
       pickNodeShape: (n) => {
         const t = effectiveNodeType(n);
         if (t === 'image') return 'square';
@@ -311,7 +315,20 @@ export default function GraphPage() {
       },
       shortLabel,
     });
-  }, [data, colorMode, collectionById]);
+  }, [data, collectionById]);
+
+  // Recolour in place when the user flips the color mode. Same object
+  // references, just a different `color` property — no simulation reset.
+  useEffect(() => {
+    if (!canvasData || !data) return;
+    const byId = new Map(data.nodes.map((n) => [n.id, n]));
+    for (const cn of canvasData.nodes) {
+      if (cn.isHub) continue;
+      const raw = byId.get(cn.id);
+      if (!raw) continue;
+      cn.color = pickColor(raw, colorMode, collectionById);
+    }
+  }, [colorMode, canvasData, data, collectionById]);
 
   const stats = data && {
     nodes: data.nodes.length,

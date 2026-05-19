@@ -234,27 +234,29 @@ export default function ForceGraphCanvas({
           }}
           onNodeDragEnd={(node: unknown) => {
             const n = node as CanvasNode;
-            // Pin the node where the user dropped it so the link length the
-            // user just chose persists. d3-force still updates neighbours
-            // around it. Double-clicking a node could later unpin it.
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const o = n as any;
-            o.fx = n.x;
-            o.fy = n.y;
             if (n.isHub) {
+              // For hubs only: pin the hub and every member at their dropped
+              // position so the cluster the user just shaped stays where
+              // they put it. Right-click on any node unpins it.
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const o = n as any;
+              o.fx = n.x;
+              o.fy = n.y;
               const members = membersByHub?.get(n.id) ?? [];
               for (const mid of members) {
                 const m = nodes.find((x) => x.id === mid);
                 if (!m) continue;
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 const om = m as any;
-                // Pin members at their dragged position too.
                 om.fx = m.x;
                 om.fy = m.y;
                 delete om.__dragOffsetX;
                 delete om.__dragOffsetY;
               }
             }
+            // For leaf nodes we DON'T pin — d3-force keeps them mobile and
+            // the link force naturally reflects the new distance the user
+            // pulled. If they want a leaf to stay put, right-click pins.
             dragSeed.current = null;
           }}
           onNodeClick={(node: unknown) => {
@@ -263,11 +265,17 @@ export default function ForceGraphCanvas({
             fgRef.current?.centerAt?.(n.x, n.y, 600);
           }}
           onNodeRightClick={(node: unknown) => {
-            // Right-click releases a pinned node so d3-force takes over again.
+            // Right-click toggles pin: if pinned (fx set) release it,
+            // otherwise pin at current position so the user can lock a node.
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const o = node as any;
-            delete o.fx;
-            delete o.fy;
+            if (typeof o.fx === 'number') {
+              delete o.fx;
+              delete o.fy;
+            } else {
+              o.fx = o.x;
+              o.fy = o.y;
+            }
             fgRef.current?.d3ReheatSimulation?.();
           }}
           onBackgroundClick={() => onBackgroundClick?.()}
