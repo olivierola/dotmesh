@@ -384,7 +384,7 @@ export default function GraphPage() {
       </header>
 
       <div className="relative flex flex-1 overflow-hidden">
-        <div className="flex-1 bg-neutral-950">
+        <div className="relative h-full flex-1 bg-neutral-950">
           {canvasData && (
             <ForceGraphCanvas
               nodes={canvasData.nodes}
