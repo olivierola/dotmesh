@@ -206,11 +206,19 @@ function onCaptureClick(e: MouseEvent): void {
       buttonEl.textContent = ok ? '✓' : '!';
       buttonEl.style.background = ok ? '#22c55e' : '#f87171';
       buttonEl.style.color = '#ffffff';
+      if (!ok) {
+        const reason = response?.error || response?.decision || 'unknown';
+        buttonEl.title = `Save failed: ${reason}`;
+        console.warn('[Mesh] hover capture failed', response);
+      } else {
+        buttonEl.title = 'Saved to Mesh';
+      }
       capturedSet.add(target.el);
+      const linger = ok ? 1000 : 3000;
       setTimeout(() => {
         if (buttonEl) buttonEl.style.display = 'none';
         currentTarget = null;
-      }, 1000);
+      }, linger);
     },
   );
 }
