@@ -14,6 +14,19 @@ import { pushNode, inject } from '@/lib/api-client';
 import { scoreSignal, type SignalInput } from '@/lib/scorer';
 import { shouldAttemptInjection, refreshKeywordsIfStale } from '@/lib/trigger';
 import { getAuth } from '@/lib/auth';
+import { extractManual, type Extracted, type NodeType } from '@/lib/extract';
+
+function manualExtracted(opts: {
+  text: string;
+  url?: string;
+  title?: string;
+  nodeType?: NodeType;
+}): Extracted {
+  const e = extractManual(opts.text, opts.url);
+  if (opts.title) e.title = opts.title;
+  if (opts.nodeType) e.node_type = opts.nodeType;
+  return e;
+}
 
 export default defineBackground(() => {
   console.log('[Mesh] background worker started');
@@ -66,21 +79,39 @@ export default defineBackground(() => {
   chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     if (info.menuItemId === 'mesh-save-selection' && info.selectionText) {
       await manualCapture({
-        content: `[Selection from ${tab?.title ?? 'web'}]\n\n${info.selectionText}`,
+        content: info.selectionText,
         url: tab?.url ?? '',
         sourceApp: tab?.url ? hostOf(tab.url) : 'web',
+        extracted: manualExtracted({
+          text: info.selectionText,
+          url: tab?.url,
+          title: tab?.title,
+          nodeType: 'text',
+        }),
       });
     } else if (info.menuItemId === 'mesh-save-page' && tab?.url) {
+      const title = tab.title ?? '(untitled)';
       await manualCapture({
-        content: `[Page] ${tab.title ?? '(untitled)'}\nURL: ${tab.url}`,
+        content: `${title}\n${tab.url}`,
         url: tab.url,
         sourceApp: hostOf(tab.url),
+        extracted: manualExtracted({
+          text: title,
+          url: tab.url,
+          title,
+          nodeType: 'page',
+        }),
       });
     } else if (info.menuItemId === 'mesh-save-link' && info.linkUrl) {
       await manualCapture({
-        content: `[Link saved] ${info.linkUrl}`,
+        content: info.linkUrl,
         url: info.linkUrl,
         sourceApp: 'web',
+        extracted: manualExtracted({
+          text: info.linkUrl,
+          url: info.linkUrl,
+          nodeType: 'link',
+        }),
       });
     }
   });
@@ -100,13 +131,17 @@ export default defineBackground(() => {
       } catch {
         /* may fail on chrome:// pages */
       }
-      const content = selection
-        ? `[Quick capture] ${selection}\nFrom: ${tab.title} (${tab.url})`
-        : `[Quick capture page] ${tab.title ?? '(untitled)'}\nURL: ${tab.url}`;
+      const text = selection || (tab.title ?? '(untitled)');
       await manualCapture({
-        content,
+        content: text,
         url: tab.url ?? '',
         sourceApp: tab.url ? hostOf(tab.url) : 'web',
+        extracted: manualExtracted({
+          text,
+          url: tab.url,
+          title: tab.title,
+          nodeType: selection ? 'text' : 'page',
+        }),
       });
     }
     if (command === 'ask-mesh') {
@@ -129,6 +164,7 @@ async function manualCapture(input: {
   content: string;
   url: string;
   sourceApp: string;
+  extracted: Extracted;
 }): Promise<void> {
   const auth = await getAuth();
   if (!auth) {
@@ -150,6 +186,14 @@ async function manualCapture(input: {
       source_app: input.sourceApp,
       tags: ['manual'],
       score: 1,
+      metadata: {
+        captureType: 'manual',
+        elementType: input.extracted.node_type,
+        pageTitle: input.extracted.title ?? undefined,
+        mediaUrl: input.extracted.media_url ?? undefined,
+        capturedAt: input.extracted.source_extracted_at,
+        extracted: input.extracted,
+      },
     },
     attempts: 0,
     ts: Date.now(),

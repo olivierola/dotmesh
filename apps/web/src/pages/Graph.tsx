@@ -17,6 +17,32 @@ const INBOX_COLOR = '#737373';
 const ORPHAN_COLOR = '#3f3f46';
 const HUB_COLOR = '#f5b301';
 
+/**
+ * Color per node_type — the dominant visual cue in the graph, as requested.
+ * Collections remain visible via the legend + chip in the side panel.
+ */
+const TYPE_COLORS: Record<string, string> = {
+  text:   '#60a5fa', // blue
+  image:  '#f472b6', // pink
+  video:  '#fb923c', // orange
+  link:   '#22d3ee', // cyan
+  code:   '#a78bfa', // purple
+  quote:  '#facc15', // yellow
+  page:   '#34d399', // green
+  action: '#e879f9', // magenta
+};
+
+const TYPE_LABELS: Record<string, string> = {
+  text: 'Text',
+  image: 'Image',
+  video: 'Video',
+  link: 'Link',
+  code: 'Code',
+  quote: 'Quote',
+  page: 'Page',
+  action: 'Action',
+};
+
 function hashIndex(id: string, mod: number): number {
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
@@ -29,33 +55,43 @@ function colorForCollection(c: GraphCollection): string {
   return FALLBACK_PALETTE[hashIndex(c.id, FALLBACK_PALETTE.length)] ?? FALLBACK_PALETTE[0]!;
 }
 
-function nodeColor(node: MockNode, collectionById: Map<string, GraphCollection>): string {
-  const ids = node.collection_ids ?? [];
-  const primary =
-    ids.map((id) => collectionById.get(id)).find((c) => c && !c.is_default) ??
-    ids.map((id) => collectionById.get(id)).find((c) => !!c);
-  if (primary) return colorForCollection(primary);
-  return ORPHAN_COLOR;
+function effectiveNodeType(node: MockNode): string {
+  return (
+    node.node_type ??
+    node.metadata?.extracted?.node_type ??
+    (node.metadata?.elementType === 'heading' || node.metadata?.elementType === 'list-item'
+      ? 'text'
+      : node.metadata?.elementType) ??
+    'text'
+  );
+}
+
+function nodeColor(node: MockNode): string {
+  const t = effectiveNodeType(node);
+  return TYPE_COLORS[t] ?? ORPHAN_COLOR;
 }
 
 function nodeShape(node: MockNode): string {
-  const t = node.metadata?.elementType;
+  const t = effectiveNodeType(node);
   if (t === 'image') return 'round-rectangle';
   if (t === 'video') return 'cut-rectangle';
   if (t === 'code') return 'round-diamond';
   if (t === 'link') return 'round-triangle';
+  if (t === 'page') return 'round-octagon';
+  if (t === 'quote') return 'round-pentagon';
+  if (t === 'action') return 'star';
   return 'ellipse';
 }
 
 // Pretty short title for a node label under the dot.
 function shortLabel(n: MockNode): string {
   const md = n.metadata ?? {};
-  const headingFromMd = (md.heading as string | undefined) ?? '';
-  const titleFromMd = (md.pageTitle as string | undefined) ?? '';
+  const extracted = md.extracted;
   const candidate =
-    headingFromMd ||
+    extracted?.title ||
+    (md.heading as string | undefined) ||
     n.summary?.split(/[.\n]/)[0] ||
-    titleFromMd ||
+    (md.pageTitle as string | undefined) ||
     n.content.split(/[.\n]/)[0] ||
     n.content;
   // Strip leading "[Tag] " markers, normalize whitespace, hard-cap to 24 chars.
@@ -158,9 +194,10 @@ export default function GraphPage() {
         data: {
           id: n.id,
           label: shortLabel(n),
-          color: nodeColor(n, collectionById),
+          color: nodeColor(n),
           shape: nodeShape(n),
           source: n.source,
+          nodeType: effectiveNodeType(n),
           isHub: false,
         },
       })),
@@ -324,7 +361,7 @@ export default function GraphPage() {
           <div>
             <h1 className="text-xl font-semibold">Graph Explorer</h1>
             <p className="mt-0.5 text-xs text-neutral-500">
-              Hexagons = source hubs. Shapes = element type. Color = collection.
+              Hexagons = source hubs. Color &amp; shape = entry type. Click a node for details.
             </p>
           </div>
           {stats && (
@@ -369,26 +406,30 @@ export default function GraphPage() {
           />
         )}
 
-        {data && data.collections.length > 0 && (
+        {data && (
           <div className="pointer-events-none absolute bottom-4 left-4 hidden max-w-[220px] rounded-md border border-neutral-800 bg-neutral-950/90 p-3 text-xs backdrop-blur sm:block">
-            <div className="mb-2 font-medium text-neutral-300">Collections</div>
+            <div className="mb-2 font-medium text-neutral-300">Entry type</div>
             <ul className="space-y-1">
-              {data.collections.slice(0, 12).map((c) => (
-                <li key={c.id} className="flex items-center gap-2 text-neutral-400">
+              {Object.keys(TYPE_COLORS).map((t) => (
+                <li key={t} className="flex items-center gap-2 text-neutral-400">
                   <span
                     className="inline-block h-2 w-2 rounded-full"
-                    style={{ background: colorForCollection(c) }}
+                    style={{ background: TYPE_COLORS[t] }}
                   />
-                  <span className="truncate">{c.name}</span>
-                  {typeof c.node_count === 'number' && (
-                    <span className="ml-auto text-[10px] text-neutral-600">{c.node_count}</span>
-                  )}
+                  <span>{TYPE_LABELS[t] ?? t}</span>
                 </li>
               ))}
             </ul>
             <div className="mt-3 border-t border-neutral-800 pt-2 text-neutral-500">
               <div className="flex items-center gap-2">
-                <span className="inline-block h-2 w-2 rotate-12" style={{ background: HUB_COLOR, clipPath: 'polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%)' }} />
+                <span
+                  className="inline-block h-2 w-2"
+                  style={{
+                    background: HUB_COLOR,
+                    clipPath:
+                      'polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%)',
+                  }}
+                />
                 Source hub
               </div>
             </div>
@@ -408,16 +449,30 @@ function SidePanel({
   collections: GraphCollection[];
   onClose: () => void;
 }) {
-  const elType = node.metadata?.elementType;
-  const mediaUrl = node.metadata?.mediaUrl as string | undefined;
+  const extracted = node.metadata?.extracted;
+  const nodeType = effectiveNodeType(node);
+  const elType = node.metadata?.elementType ?? nodeType;
+  const mediaUrl = extracted?.media_url ?? (node.metadata?.mediaUrl as string | undefined);
+  const thumb = extracted?.media_thumbnail ?? null;
   const captureType = node.metadata?.captureType;
-  const capturedAt = (node.metadata?.capturedAt as string | undefined) ?? node.created_at;
+  const capturedAt =
+    extracted?.source_extracted_at ??
+    (node.metadata?.capturedAt as string | undefined) ??
+    node.created_at;
   const dateObj = new Date(capturedAt);
   const surroundingContext = node.metadata?.surroundingContext as string | undefined;
   const heading = node.metadata?.heading as string | undefined;
-  const author = node.metadata?.author as string | undefined;
-  const pageTitle = node.metadata?.pageTitle as string | undefined;
+  const author = extracted?.author ?? (node.metadata?.author as string | undefined);
+  const pageTitle =
+    extracted?.title ?? (node.metadata?.pageTitle as string | undefined);
   const reason = node.metadata?.reason as string | undefined;
+  const description = extracted?.description ?? null;
+  const siteName = extracted?.site_name ?? node.source_app ?? null;
+  const lang = extracted?.lang ?? null;
+  const publishedAt = extracted?.published_at ?? null;
+  const extractedKeywords = extracted?.keywords ?? [];
+  const extractedActions = extracted?.actions ?? [];
+  const extractionMethod = extracted?.extraction_method ?? null;
 
   // Strip the leading [tag] from the content (e.g., "[Image] https://...") for display
   const cleanContent = (node.content ?? '').replace(/^\[[^\]]+\]\s*/, '');
@@ -426,14 +481,31 @@ function SidePanel({
     <aside className="absolute right-0 top-0 z-10 flex h-full w-full max-w-[90vw] flex-col border-l border-neutral-800 bg-neutral-950/95 backdrop-blur sm:w-[420px]">
       <div className="flex items-center justify-between border-b border-neutral-800 p-4">
         <div className="flex flex-wrap items-center gap-1.5 text-xs">
+          <span
+            className="rounded px-2 py-0.5 font-medium"
+            style={{
+              background: (TYPE_COLORS[nodeType] ?? ORPHAN_COLOR) + '22',
+              color: TYPE_COLORS[nodeType] ?? '#a3a3a3',
+            }}
+          >
+            {TYPE_LABELS[nodeType] ?? nodeType}
+          </span>
           {captureType && (
             <span className="rounded bg-amber-500/10 px-2 py-0.5 text-amber-300">
               {captureType}
             </span>
           )}
-          {elType && (
+          {elType && elType !== nodeType && (
             <span className="rounded border border-neutral-800 px-2 py-0.5 text-neutral-400">
               {elType}
+            </span>
+          )}
+          {extractionMethod && (
+            <span
+              className="rounded border border-neutral-800 px-2 py-0.5 text-neutral-500"
+              title="How metadata was obtained"
+            >
+              {extractionMethod}
             </span>
           )}
           {reason && (
@@ -452,12 +524,22 @@ function SidePanel({
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 text-sm">
+        {/* Title from extracted */}
+        {pageTitle && (
+          <h2 className="mb-2 text-base font-semibold leading-snug text-neutral-100">
+            {pageTitle}
+          </h2>
+        )}
+        {description && (
+          <p className="mb-4 text-sm text-neutral-300">{description}</p>
+        )}
+
         {/* Media preview */}
-        {elType === 'image' && mediaUrl && (
+        {(nodeType === 'image' || elType === 'image') && (mediaUrl || thumb) && (
           <div className="mb-4 overflow-hidden rounded-md border border-neutral-800 bg-neutral-900">
             <img
-              src={mediaUrl}
-              alt={node.summary ?? ''}
+              src={mediaUrl ?? thumb ?? ''}
+              alt={pageTitle ?? node.summary ?? ''}
               className="block h-auto max-h-80 w-full object-contain"
               onError={(e) => {
                 (e.currentTarget as HTMLImageElement).style.display = 'none';
@@ -465,19 +547,25 @@ function SidePanel({
             />
           </div>
         )}
-        {elType === 'video' && mediaUrl && (
+        {(nodeType === 'video' || elType === 'video') && mediaUrl && (
           <div className="mb-4 overflow-hidden rounded-md border border-neutral-800 bg-neutral-900">
-            <video src={mediaUrl} controls className="block h-auto max-h-80 w-full" preload="metadata" />
+            <video
+              src={mediaUrl}
+              poster={thumb ?? undefined}
+              controls
+              className="block h-auto max-h-80 w-full"
+              preload="metadata"
+            />
           </div>
         )}
-        {elType === 'code' && (
+        {nodeType === 'code' && (
           <pre className="mb-4 max-h-72 overflow-auto rounded-md border border-neutral-800 bg-neutral-900 p-3 text-[11px] leading-relaxed text-neutral-300">
-            <code>{cleanContent}</code>
+            <code>{extracted?.content ?? cleanContent}</code>
           </pre>
         )}
 
         {/* Summary */}
-        {node.summary && (
+        {node.summary && node.summary !== description && (
           <div className="mb-4">
             <div className="mb-1 text-[10px] uppercase tracking-widest text-neutral-500">
               Summary
@@ -511,7 +599,7 @@ function SidePanel({
           </div>
         )}
 
-        {/* Metadata: date + url */}
+        {/* Metadata: date + url + extracted fields */}
         <div className="mb-4 space-y-1.5 rounded-md border border-neutral-800 bg-neutral-900/30 p-3 text-xs">
           <div className="flex justify-between gap-3">
             <span className="text-neutral-500">Captured</span>
@@ -522,18 +610,28 @@ function SidePanel({
               </span>
             </span>
           </div>
-          {node.source_app && (
+          {author && (
             <div className="flex justify-between gap-3">
-              <span className="text-neutral-500">Source app</span>
-              <span className="text-neutral-300">{node.source_app}</span>
+              <span className="text-neutral-500">Author</span>
+              <span className="text-right text-neutral-200">{author}</span>
             </div>
           )}
-          {pageTitle && (
+          {publishedAt && (
             <div className="flex justify-between gap-3">
-              <span className="text-neutral-500">Page</span>
-              <span className="truncate text-right text-neutral-300" title={pageTitle}>
-                {pageTitle.length > 50 ? pageTitle.slice(0, 50) + '…' : pageTitle}
-              </span>
+              <span className="text-neutral-500">Published</span>
+              <span className="text-right text-neutral-300">{publishedAt}</span>
+            </div>
+          )}
+          {lang && (
+            <div className="flex justify-between gap-3">
+              <span className="text-neutral-500">Language</span>
+              <span className="text-right text-neutral-300">{lang}</span>
+            </div>
+          )}
+          {siteName && (
+            <div className="flex justify-between gap-3">
+              <span className="text-neutral-500">Source app</span>
+              <span className="text-neutral-300">{siteName}</span>
             </div>
           )}
           {node.source_url && (
@@ -606,6 +704,45 @@ function SidePanel({
                 </span>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Keywords from extracted */}
+        {extractedKeywords.length > 0 && (
+          <div className="mb-4">
+            <div className="mb-1.5 text-[10px] uppercase tracking-widest text-neutral-500">
+              Keywords
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {extractedKeywords.map((k, i) => (
+                <span
+                  key={`${k}-${i}`}
+                  className="rounded-full border border-neutral-800 bg-neutral-900/60 px-2 py-0.5 text-[11px] text-neutral-300"
+                >
+                  {k}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* User / system actions on this node */}
+        {extractedActions.length > 0 && (
+          <div className="mb-4">
+            <div className="mb-1.5 text-[10px] uppercase tracking-widest text-neutral-500">
+              Actions
+            </div>
+            <ul className="space-y-1 text-[11px] text-neutral-400">
+              {extractedActions.slice(0, 6).map((a, i) => (
+                <li key={i} className="flex justify-between gap-3">
+                  <span className="text-neutral-300">{a.kind}</span>
+                  <span className="text-neutral-500">
+                    {a.value ? `${a.value} · ` : ''}
+                    {a.at ? formatDistanceToNow(new Date(a.at), { addSuffix: true }) : ''}
+                  </span>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
 

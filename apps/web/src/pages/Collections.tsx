@@ -28,6 +28,22 @@ export default function CollectionsPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['collections'] }),
   });
 
+  const reclassifyOrphans = useMutation({
+    mutationFn: () => api.reclassifyOrphansWithLLM(),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['collections'] });
+      const created = res.created.length;
+      const msg =
+        res.scanned === 0
+          ? 'Nothing in Inbox needed reclassifying.'
+          : `Scanned ${res.scanned} Inbox memories — reassigned ${res.reassigned}` +
+            (created > 0 ? `, created ${created} new collection${created > 1 ? 's' : ''}.` : '.') +
+            (res.skipped ? ` ${res.skipped} more queued for next run.` : '');
+      window.alert(msg);
+    },
+    onError: (e) => window.alert(`Reclassify failed: ${(e as Error).message}`),
+  });
+
   return (
     <div className="mx-auto max-w-5xl p-4 md:p-8">
       <header className="mb-6 flex items-start justify-between gap-4">
@@ -38,12 +54,32 @@ export default function CollectionsPage() {
             automatically, and you can scope embeds & agents to one of them.
           </p>
         </div>
-        <button
-          onClick={() => setCreating(true)}
-          className="shrink-0 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent-600"
-        >
-          + New collection
-        </button>
+        <div className="flex shrink-0 gap-2">
+          <button
+            onClick={() => {
+              if (
+                window.confirm(
+                  'Use AI to reassign memories currently sitting only in Inbox? ' +
+                    'Up to 50 memories will be reclassified into existing collections, ' +
+                    'and a new collection may be proposed if a clear theme emerges.',
+                )
+              ) {
+                reclassifyOrphans.mutate();
+              }
+            }}
+            disabled={reclassifyOrphans.isPending}
+            className="rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs font-medium text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+            title="Run the AI classifier on Inbox-only memories"
+          >
+            {reclassifyOrphans.isPending ? 'Reclassifying…' : '✨ Reclassify Inbox'}
+          </button>
+          <button
+            onClick={() => setCreating(true)}
+            className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent-600"
+          >
+            + New collection
+          </button>
+        </div>
       </header>
 
       {isLoading && (

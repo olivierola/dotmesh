@@ -18,6 +18,8 @@ import { handleCorsPreflight } from '../_shared/cors.ts';
 import { requireUser, createServiceClient } from '../_shared/supabase.ts';
 import { jsonResponse, errorResponse, parseJsonBody } from '../_shared/http.ts';
 import { describeToFilter } from '../_shared/collections-classifier.ts';
+import { llmAssignCollections } from '../_shared/collections-llm-assigner.ts';
+import { readExtracted, fallbackExtractedFromContent } from '../_shared/extracted.ts';
 
 const createSchema = z.object({
   name: z.string().min(1).max(80),
@@ -51,6 +53,81 @@ Deno.serve(async (req) => {
     const segments = url.pathname.split('/').filter(Boolean);
     const last = segments[segments.length - 1];
     const beforeLast = segments[segments.length - 2];
+
+    // /collections/reclassify-orphans — run the LLM assigner on every node
+    // currently attached ONLY to Inbox (no thematic home). Bounded, idempotent.
+    if (req.method === 'POST' && last === 'reclassify-orphans') {
+      const service = createServiceClient();
+
+      // 1. find the default (Inbox) collection id
+      const { data: inbox } = await service
+        .from('collections')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('is_default', true)
+        .maybeSingle();
+      if (!inbox) return errorResponse('no_inbox', 500);
+
+      // 2. nodes attached to Inbox AND nothing else
+      const { data: orphanRows } = await service
+        .from('node_collections')
+        .select('node_id')
+        .eq('user_id', userId)
+        .eq('collection_id', inbox.id);
+      const inboxIds = (orphanRows ?? []).map((r) => r.node_id as string);
+      if (inboxIds.length === 0) {
+        return jsonResponse({ ok: true, scanned: 0, reassigned: 0, created: [] });
+      }
+
+      // For each, check if it has another collection — if yes, skip.
+      const { data: otherRows } = await service
+        .from('node_collections')
+        .select('node_id, collection_id')
+        .in('node_id', inboxIds);
+      const hasOther = new Set<string>();
+      for (const r of otherRows ?? []) {
+        if (r.collection_id !== inbox.id) hasOther.add(r.node_id as string);
+      }
+      const targetIds = inboxIds.filter((id) => !hasOther.has(id));
+      // Cap to avoid runaway cost on first big backfill.
+      const batch = targetIds.slice(0, 50);
+
+      // 3. for each target node, fetch row & run LLM assigner
+      const { data: nodes } = await service
+        .from('context_nodes')
+        .select('id, content, metadata, tags, source, source_url, source_app')
+        .in('id', batch);
+
+      let reassigned = 0;
+      const created: string[] = [];
+      for (const n of nodes ?? []) {
+        const extracted =
+          readExtracted(n.metadata) ??
+          fallbackExtractedFromContent(
+            n.content ?? '',
+            n.source ?? 'extension',
+            n.source_url as string | null,
+            n.source_app as string | null,
+          );
+        const r = await llmAssignCollections(service, {
+          nodeId: n.id as string,
+          userId,
+          extracted,
+          rawContent: (n.content as string) ?? '',
+          tags: ((n.tags as string[] | null) ?? []),
+          deterministicMatchedNonDefault: false,
+        });
+        if (r.added > 0) reassigned += r.added;
+        if (r.created_collection) created.push(r.created_collection);
+      }
+      return jsonResponse({
+        ok: true,
+        scanned: batch.length,
+        skipped: targetIds.length - batch.length,
+        reassigned,
+        created,
+      });
+    }
 
     // /collections/preview — dry-run on a rule_prompt, no id needed
     if (req.method === 'POST' && last === 'preview') {

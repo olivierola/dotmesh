@@ -73,8 +73,18 @@ export interface ListNodesResponse {
   offset?: number;
 }
 
+export interface SearchFilters {
+  tags?: string[];
+  source?: string;
+  since?: string;
+  node_types?: string[];
+  collection_id?: string;
+  author?: string;
+}
+
 export interface SearchResponse {
   results: Array<MockNode & { score: number }>;
+  reranked?: boolean;
 }
 
 export interface GraphCollection {
@@ -152,11 +162,20 @@ export const api = {
     });
   },
 
-  async search(query: string, topK = 20): Promise<SearchResponse> {
+  async search(
+    query: string,
+    topK = 20,
+    opts: { filters?: SearchFilters; rerank?: boolean } = {},
+  ): Promise<SearchResponse> {
     if (USE_MOCK) return mockApi.search(query);
     return realFetch<SearchResponse>('/search', {
       method: 'POST',
-      body: JSON.stringify({ query, top_k: topK }),
+      body: JSON.stringify({
+        query,
+        top_k: topK,
+        rerank: opts.rerank ?? true,
+        filters: opts.filters,
+      }),
     });
   },
 
@@ -553,6 +572,16 @@ export const api = {
 
   async reclassifyCollection(id: string): Promise<{ ok: boolean; matched: number }> {
     return realFetch(`/collections/${id}/reclassify`, { method: 'POST' });
+  },
+
+  async reclassifyOrphansWithLLM(): Promise<{
+    ok: boolean;
+    scanned: number;
+    skipped?: number;
+    reassigned: number;
+    created: string[];
+  }> {
+    return realFetch('/collections/reclassify-orphans', { method: 'POST' });
   },
 
   // ----- Account -----

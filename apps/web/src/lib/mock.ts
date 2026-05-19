@@ -3,6 +3,39 @@
  * Replace by real API calls once Supabase is up.
  */
 
+export type NodeType =
+  | 'text'
+  | 'image'
+  | 'video'
+  | 'link'
+  | 'code'
+  | 'quote'
+  | 'page'
+  | 'action';
+
+export interface ExtractedAction {
+  kind: string;
+  value?: string | null;
+  at: string;
+}
+
+export interface ExtractedMetadata {
+  node_type: NodeType;
+  title: string | null;
+  description: string | null;
+  author: string | null;
+  content: string | null;
+  media_url: string | null;
+  media_thumbnail: string | null;
+  lang: string | null;
+  site_name: string | null;
+  published_at: string | null;
+  keywords: string[];
+  actions: ExtractedAction[];
+  source_extracted_at: string;
+  extraction_method: 'heuristic' | 'llm' | 'mixed' | 'manual';
+}
+
 export interface MockNode {
   id: string;
   source: string;
@@ -15,9 +48,11 @@ export interface MockNode {
   score: number | null;
   created_at: string;
   pinned: boolean;
+  /** Generated column from metadata.extracted.node_type. */
+  node_type?: NodeType;
   metadata?: {
     captureType?: 'hover' | 'attention' | 'reading' | 'ai_session' | 'search' | 'active_work' | 'manual';
-    elementType?: 'text' | 'heading' | 'link' | 'image' | 'video' | 'code' | 'quote' | 'list-item';
+    elementType?: 'text' | 'heading' | 'link' | 'image' | 'video' | 'code' | 'quote' | 'list-item' | 'page' | 'action';
     mediaUrl?: string;
     surroundingContext?: string;
     pageTitle?: string;
@@ -25,6 +60,7 @@ export interface MockNode {
     heading?: string;
     author?: string;
     reason?: string;
+    extracted?: ExtractedMetadata;
     [key: string]: unknown;
   };
   collection_ids?: string[];

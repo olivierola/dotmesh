@@ -168,7 +168,7 @@ async function handleList(req: Request): Promise<Response> {
   let query = client
     .from('context_nodes')
     .select(
-      'id, source, source_url, source_app, content, summary, entities, tags, score, created_at, pinned, metadata',
+      'id, source, source_url, source_app, content, summary, entities, tags, score, created_at, pinned, metadata, node_type',
     )
     .order('created_at', { ascending: false })
     .range(offset, offset + limit - 1);

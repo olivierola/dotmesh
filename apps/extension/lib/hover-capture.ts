@@ -4,7 +4,14 @@
  * Click captures content + surrounding context.
  */
 
+import { extractFromElement, contentFromExtracted, type NodeType } from './extract';
+
 type ElementType = 'text' | 'heading' | 'link' | 'image' | 'video' | 'code' | 'quote' | 'list-item';
+
+function toNodeType(t: ElementType): NodeType {
+  if (t === 'heading' || t === 'list-item') return 'text';
+  return t;
+}
 
 interface CaptureTarget {
   el: HTMLElement;
@@ -158,87 +165,14 @@ function findCapturable(el: HTMLElement | null): CaptureTarget | null {
   return null;
 }
 
-function extractContent(target: CaptureTarget): {
-  content: string;
-  elementType: ElementType;
-  mediaUrl?: string;
-  surroundingContext?: string;
-} {
-  const { el, type } = target;
-
-  if (type === 'image') {
-    const img = el.tagName === 'IMG' ? (el as HTMLImageElement) : el.querySelector('img');
-    const src = img?.currentSrc || img?.src || '';
-    const alt = img?.alt || '';
-    const figcaption = el.closest('figure')?.querySelector('figcaption')?.textContent?.trim() ?? '';
-    const surroundingContext = collectSurroundingText(el, 400);
-    const parts = [`[Image] ${src}`];
-    if (alt) parts.push(`Alt: ${alt}`);
-    if (figcaption) parts.push(`Caption: ${figcaption}`);
-    if (surroundingContext) parts.push(`Context: ${surroundingContext}`);
-    return { content: parts.join('\n'), elementType: type, mediaUrl: src, surroundingContext };
-  }
-
-  if (type === 'video') {
-    const video = el as HTMLVideoElement;
-    const src = video.currentSrc || video.src || '';
-    const poster = video.poster || '';
-    const surroundingContext = collectSurroundingText(el, 400);
-    const parts = [`[Video] ${src || '(streaming source)'}`];
-    if (poster) parts.push(`Poster: ${poster}`);
-    if (surroundingContext) parts.push(`Context: ${surroundingContext}`);
-    return { content: parts.join('\n'), elementType: type, mediaUrl: src, surroundingContext };
-  }
-
-  if (type === 'link') {
-    const a = el as HTMLAnchorElement;
-    const text = (a.textContent ?? '').trim();
-    return {
-      content: `[Link] ${a.href}\n${text}`,
-      elementType: type,
-      mediaUrl: a.href,
-    };
-  }
-
-  if (type === 'code') {
-    const text = (el.textContent ?? '').trim().slice(0, 4000);
-    const lang =
-      el.className.match(/language-([a-z0-9+#-]+)/i)?.[1] ??
-      el.getAttribute('data-language') ??
-      'unknown';
-    return { content: `[Code:${lang}]\n${text}`, elementType: type };
-  }
-
-  // Default: text-like
-  const text = (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 4000);
-  const label =
-    type === 'heading' ? 'Heading'
-    : type === 'quote' ? 'Quote'
-    : type === 'list-item' ? 'List item'
-    : 'Excerpt';
-  return { content: `[${label}] ${text}`, elementType: type };
-}
-
-function collectSurroundingText(el: HTMLElement, maxLen: number): string {
-  const parent = el.parentElement;
-  if (!parent) return '';
-  let text = '';
-  for (const child of Array.from(parent.children)) {
-    if (child === el) continue;
-    if (child.matches('script, style, [data-mesh-ui]')) continue;
-    const t = (child.textContent ?? '').replace(/\s+/g, ' ').trim();
-    if (t.length > 20) text += t + ' ';
-    if (text.length > maxLen) break;
-  }
-  return text.slice(0, maxLen).trim();
-}
-
 function onCaptureClick(e: MouseEvent): void {
   e.stopPropagation();
   e.preventDefault();
   if (!currentTarget || !buttonEl) return;
   const target = currentTarget;
-  const extracted = extractContent(target);
+  const nodeType = toNodeType(target.type);
+  const extracted = extractFromElement(target.el, nodeType);
+  const content = contentFromExtracted(extracted);
 
   // Lock visual state to "saving"
   buttonEl.textContent = '...';
@@ -248,7 +182,7 @@ function onCaptureClick(e: MouseEvent): void {
     {
       type: 'CAPTURE_SIGNAL',
       signal: {
-        content: extracted.content,
+        content,
         url: window.location.href,
         signalType: 'hover',
         dwellMs: 0,
@@ -257,11 +191,13 @@ function onCaptureClick(e: MouseEvent): void {
       metadata: {
         sourceApp: window.location.hostname,
         captureType: 'hover',
-        elementType: extracted.elementType,
-        mediaUrl: extracted.mediaUrl,
-        surroundingContext: extracted.surroundingContext,
+        // Legacy fields (kept so older clients/code still see something).
+        elementType: target.type,
+        mediaUrl: extracted.media_url ?? undefined,
         pageTitle: document.title,
         capturedAt: new Date().toISOString(),
+        // Canonical shape — process-node will fill any null fields with LLM.
+        extracted,
       },
     },
     (response) => {

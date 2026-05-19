@@ -1,15 +1,19 @@
 /**
  * POST /functions/v1/process-node
  *
- * Async processor for a freshly created node:
- *   - Run NER (Groq llama-8b)
- *   - Generate summary (Groq llama-70b)
- *   - Compute embedding (Jina v3)
- *   - Update node row
- *   - TODO Phase 1: trigger edge inference
+ * Async processor for a freshly created node. Pipeline:
  *
- * Invoked by the `nodes` function fire-and-forget OR by a Realtime trigger.
- * Authenticated via service role (no end-user JWT).
+ *   1. Load row (content, summary, metadata, etc.)
+ *   2. Ensure metadata.extracted exists (build a minimal one if missing).
+ *   3. Run heuristic→LLM completion of extracted (fill null title/author/...).
+ *   4. NER + summary + Jina embedding (concurrent).
+ *   5. Persist updates (entities, summary, embedding, metadata.extracted).
+ *   6. Edge inference.
+ *   7. Collection assignment:
+ *        a) Deterministic filter-based classifier (existing).
+ *        b) LLM-based classifier when (a) only yielded Inbox.
+ *
+ * Auth: service-role bearer only (this is invoked by `nodes` fire-and-forget).
  */
 
 import { handleCorsPreflight } from '../_shared/cors.ts';
@@ -18,6 +22,12 @@ import { jsonResponse, errorResponse, parseJsonBody } from '../_shared/http.ts';
 import { extractEntities, summarize, jinaEmbed } from '../_shared/ai.ts';
 import { inferEdgesForNode } from '../_shared/edges.ts';
 import { classifyNodeIntoCollections } from '../_shared/collections-assigner.ts';
+import { llmAssignCollections } from '../_shared/collections-llm-assigner.ts';
+import {
+  readExtracted,
+  fallbackExtractedFromContent,
+  completeExtractedWithLLM,
+} from '../_shared/extracted.ts';
 
 interface ProcessInput {
   node_id: string;
@@ -28,7 +38,6 @@ Deno.serve(async (req) => {
   if (cors) return cors;
   if (req.method !== 'POST') return errorResponse('method_not_allowed', 405);
 
-  // Service-role auth check
   const auth = req.headers.get('Authorization') ?? '';
   const expected = `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`;
   if (auth !== expected) return errorResponse('forbidden', 403);
@@ -40,20 +49,56 @@ Deno.serve(async (req) => {
     const client = createServiceClient();
     const { data: node, error } = await client
       .from('context_nodes')
-      .select('id, user_id, content, summary, embedding, entities')
+      .select(
+        'id, user_id, content, summary, embedding, entities, metadata, source, source_url, source_app, tags',
+      )
       .eq('id', node_id)
       .maybeSingle();
 
     if (error || !node) return errorResponse('node_not_found', 404);
 
-    // Run NER + summary + embedding concurrently
+    // ---- Step 1: extracted JSON ---------------------------------------------
+    const initial =
+      readExtracted(node.metadata) ??
+      fallbackExtractedFromContent(
+        node.content ?? '',
+        node.source ?? 'extension',
+        node.source_url,
+        node.source_app,
+      );
+
+    const extracted = await completeExtractedWithLLM(
+      initial,
+      node.content ?? '',
+      node.source_url,
+    );
+
+    // ---- Step 2: NER + summary + embedding (concurrent) ---------------------
+    const summarySource = extracted.description ?? extracted.title ?? node.content ?? '';
+    const embedSource = extracted.title
+      ? `${extracted.title}\n${extracted.description ?? ''}\n${extracted.content ?? node.content ?? ''}`
+      : (node.content ?? '');
+
     const [entities, summary, embedding] = await Promise.all([
-      extractEntities(node.content),
-      node.summary ? Promise.resolve(node.summary) : summarize(node.content),
-      node.embedding ? Promise.resolve(null) : jinaEmbed(node.summary ?? node.content),
+      extractEntities(extracted.content ?? node.content ?? ''),
+      node.summary
+        ? Promise.resolve(node.summary)
+        : extracted.description
+          ? Promise.resolve(extracted.description)
+          : summarize(summarySource),
+      node.embedding ? Promise.resolve(null) : jinaEmbed(embedSource),
     ]);
 
-    const updates: Record<string, unknown> = { entities };
+    // ---- Step 3: persist ----------------------------------------------------
+    const mergedMetadata = {
+      ...(node.metadata as Record<string, unknown> | null ?? {}),
+      extracted,
+    };
+
+    const updates: Record<string, unknown> = {
+      entities,
+      metadata: mergedMetadata,
+    };
     if (summary) updates.summary = summary;
     if (embedding) updates.embedding = embedding;
 
@@ -67,7 +112,7 @@ Deno.serve(async (req) => {
       return errorResponse('update_failed', 500, updateErr);
     }
 
-    // Edge inference (uses the freshly enriched node)
+    // ---- Step 4: edge inference --------------------------------------------
     let edgesCreated = 0;
     try {
       const inferred = await inferEdgesForNode(client, {
@@ -81,24 +126,56 @@ Deno.serve(async (req) => {
       console.warn('edge inference failed (non-fatal)', e);
     }
 
-    // Collection assignment (deterministic, no LLM call — uses SQL helper).
+    // ---- Step 5a: deterministic collection classifier -----------------------
     let collectionsAssigned = 0;
+    let deterministicMatchedNonDefault = false;
     try {
       collectionsAssigned = await classifyNodeIntoCollections(
         client,
         node.id,
         node.user_id,
       );
+      // Did the classifier attach anything besides Inbox? If so, skip LLM.
+      if (collectionsAssigned > 0) {
+        const { data: assigned } = await client
+          .from('node_collections')
+          .select('collection_id, collections!inner(is_default)')
+          .eq('node_id', node.id);
+        deterministicMatchedNonDefault = (assigned ?? []).some(
+          (row) => (row as unknown as { collections: { is_default: boolean } }).collections.is_default === false,
+        );
+      }
     } catch (e) {
       console.warn('collection assignment failed (non-fatal)', e);
+    }
+
+    // ---- Step 5b: LLM collection assigner ----------------------------------
+    let llmCollectionsAdded = 0;
+    let createdCollectionId: string | null = null;
+    try {
+      const r = await llmAssignCollections(client, {
+        nodeId: node.id,
+        userId: node.user_id,
+        extracted,
+        rawContent: node.content ?? '',
+        tags: (node.tags as string[] | null) ?? [],
+        deterministicMatchedNonDefault,
+      });
+      llmCollectionsAdded = r.added;
+      createdCollectionId = r.created_collection;
+    } catch (e) {
+      console.warn('llm collection assignment failed (non-fatal)', e);
     }
 
     return jsonResponse({
       ok: true,
       node_id,
+      node_type: extracted.node_type,
       entities_count: entities.length,
       edges_created: edgesCreated,
-      collections_assigned: collectionsAssigned,
+      collections_assigned: collectionsAssigned + llmCollectionsAdded,
+      collection_created: createdCollectionId,
+      extraction_method: extracted.extraction_method,
     });
   } catch (e) {
     if (e instanceof Response) return e;
