@@ -1,10 +1,103 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { formatDistanceToNow } from 'date-fns';
+import { format, formatDistanceToNow } from 'date-fns';
 import { api } from '@/lib/api-client';
 import type { MockNode } from '@/lib/mock';
 import CaptureBar, { type CapturePayload } from '@/components/CaptureBar';
 import { SkeletonList } from '@/components/Skeleton';
+
+interface SessionGroup {
+  /** session_id or 'older' for nodes with no session_id. */
+  key: string;
+  isUngrouped: boolean;
+  startedAt: Date;
+  endedAt: Date;
+  /** Distinct site_name / source_app collected across the session. */
+  sites: string[];
+  /** Distinct node_type values to colour the row. */
+  types: string[];
+  nodes: MockNode[];
+}
+
+function sessionIdOf(n: MockNode): string | null {
+  const md = n.metadata as Record<string, unknown> | undefined;
+  const sid = md?.session_id;
+  return typeof sid === 'string' && sid.length > 0 ? sid : null;
+}
+
+function siteOf(n: MockNode): string | null {
+  return (
+    n.metadata?.extracted?.site_name ??
+    n.source_app ??
+    (() => {
+      try {
+        return n.source_url ? new URL(n.source_url).hostname : null;
+      } catch {
+        return null;
+      }
+    })()
+  );
+}
+
+/**
+ * Group sorted-desc nodes into session buckets. Pinned nodes stay outside
+ * a group and float to the top (handled by the caller).
+ */
+function groupBySession(nodesSortedDesc: MockNode[]): SessionGroup[] {
+  const buckets = new Map<string, MockNode[]>();
+  const order: string[] = [];
+  for (const n of nodesSortedDesc) {
+    const sid = sessionIdOf(n) ?? 'older';
+    if (!buckets.has(sid)) {
+      buckets.set(sid, []);
+      order.push(sid);
+    }
+    buckets.get(sid)!.push(n);
+  }
+  const groups: SessionGroup[] = [];
+  for (const key of order) {
+    const arr = buckets.get(key)!;
+    // arr is in desc order already (we kept the input order)
+    const startedAt = new Date(arr[arr.length - 1]!.created_at);
+    const endedAt = new Date(arr[0]!.created_at);
+    const sites = Array.from(
+      new Set(arr.map(siteOf).filter((s): s is string => !!s)),
+    ).slice(0, 5);
+    const types = Array.from(
+      new Set(
+        arr
+          .map(
+            (n): string =>
+              (n.node_type as string | undefined) ??
+              (n.metadata?.extracted?.node_type as string | undefined) ??
+              'text',
+          )
+          .filter((t): t is string => !!t),
+      ),
+    );
+    groups.push({
+      key,
+      isUngrouped: key === 'older',
+      startedAt,
+      endedAt,
+      sites,
+      types,
+      nodes: arr,
+    });
+  }
+  return groups;
+}
+
+const TYPE_DOT: Record<string, string> = {
+  text: '#60a5fa',
+  image: '#f472b6',
+  video: '#fb923c',
+  link: '#22d3ee',
+  code: '#a78bfa',
+  quote: '#facc15',
+  page: '#34d399',
+  action: '#e879f9',
+};
 
 export default function TimelinePage() {
   const qc = useQueryClient();
@@ -63,15 +156,27 @@ export default function TimelinePage() {
     }
   };
 
-  const sortedNodes = data
-    ? [...data.nodes].sort((a, b) => {
-        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-        return b.created_at.localeCompare(a.created_at);
-      })
-    : [];
+  const { pinned, groups } = useMemo(() => {
+    if (!data) return { pinned: [] as MockNode[], groups: [] as SessionGroup[] };
+    const sortedDesc = [...data.nodes].sort((a, b) =>
+      b.created_at.localeCompare(a.created_at),
+    );
+    return {
+      pinned: sortedDesc.filter((n) => n.pinned),
+      groups: groupBySession(sortedDesc.filter((n) => !n.pinned)),
+    };
+  }, [data]);
 
   const selectedArr = Array.from(selected);
   const allSelected = !!data && data.nodes.length > 0 && selected.size === data.nodes.length;
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const toggleGroup = (key: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
 
   return (
     <div className="mx-auto max-w-3xl p-4 md:p-8">
@@ -119,29 +224,142 @@ export default function TimelinePage() {
 
       {isLoading && <SkeletonList count={5} />}
 
-      <ul className="flex flex-col gap-2">
-        {sortedNodes.map((n) => (
-          <NodeRow
-            key={n.id}
-            n={n}
-            selected={selected.has(n.id)}
-            editing={editingId === n.id}
-            onToggle={() => toggle(n.id)}
-            onStartEdit={() => setEditingId(n.id)}
-            onSaveEdit={(text) => {
-              update.mutate({ id: n.id, patch: { edited_summary: text, summary: text } });
-              setEditingId(null);
-            }}
-            onCancelEdit={() => setEditingId(null)}
-            onTogglePin={() => update.mutate({ id: n.id, patch: { pinned: !n.pinned } })}
-            onDelete={() => removeOne.mutate(n.id)}
+      {/* Pinned memories float to the very top, outside session grouping. */}
+      {pinned.length > 0 && (
+        <section className="mb-6">
+          <h2 className="mb-2 flex items-center gap-2 text-[10px] font-medium uppercase tracking-widest text-neutral-500">
+            <span className="text-accent">★</span> Pinned
+          </h2>
+          <ul className="flex flex-col gap-2">
+            {pinned.map((n) => (
+              <NodeRow
+                key={n.id}
+                n={n}
+                selected={selected.has(n.id)}
+                editing={editingId === n.id}
+                onToggle={() => toggle(n.id)}
+                onStartEdit={() => setEditingId(n.id)}
+                onSaveEdit={(text) => {
+                  update.mutate({
+                    id: n.id,
+                    patch: { edited_summary: text, summary: text },
+                  });
+                  setEditingId(null);
+                }}
+                onCancelEdit={() => setEditingId(null)}
+                onTogglePin={() =>
+                  update.mutate({ id: n.id, patch: { pinned: !n.pinned } })
+                }
+                onDelete={() => removeOne.mutate(n.id)}
+              />
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <div className="flex flex-col gap-5">
+        {groups.map((g) => (
+          <SessionBlock
+            key={g.key}
+            group={g}
+            collapsed={collapsed.has(g.key)}
+            onToggleCollapse={() => toggleGroup(g.key)}
+            renderNode={(n) => (
+              <NodeRow
+                key={n.id}
+                n={n}
+                selected={selected.has(n.id)}
+                editing={editingId === n.id}
+                onToggle={() => toggle(n.id)}
+                onStartEdit={() => setEditingId(n.id)}
+                onSaveEdit={(text) => {
+                  update.mutate({
+                    id: n.id,
+                    patch: { edited_summary: text, summary: text },
+                  });
+                  setEditingId(null);
+                }}
+                onCancelEdit={() => setEditingId(null)}
+                onTogglePin={() =>
+                  update.mutate({ id: n.id, patch: { pinned: !n.pinned } })
+                }
+                onDelete={() => removeOne.mutate(n.id)}
+              />
+            )}
           />
         ))}
         {data?.nodes.length === 0 && (
           <p className="text-sm text-neutral-500">No memories yet. Add one above.</p>
         )}
-      </ul>
+      </div>
     </div>
+  );
+}
+
+function SessionBlock({
+  group,
+  collapsed,
+  onToggleCollapse,
+  renderNode,
+}: {
+  group: SessionGroup;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
+  renderNode: (n: MockNode) => JSX.Element;
+}) {
+  const minutes = Math.max(
+    1,
+    Math.round((group.endedAt.getTime() - group.startedAt.getTime()) / 60_000),
+  );
+
+  const headline = group.isUngrouped
+    ? 'Older memories (no session)'
+    : `Session · ${format(group.endedAt, 'MMM d, HH:mm')}`;
+
+  return (
+    <section>
+      <header className="mb-2 flex items-center justify-between gap-2">
+        <button
+          onClick={onToggleCollapse}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+        >
+          <span className="text-neutral-500 transition-transform" style={{
+            display: 'inline-block',
+            transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
+          }}>▾</span>
+          <h2 className="truncate text-sm font-medium text-neutral-200">
+            {headline}
+          </h2>
+          <span className="text-[11px] text-neutral-500">
+            {group.nodes.length} memor{group.nodes.length === 1 ? 'y' : 'ies'}
+            {!group.isUngrouped && ` · ${minutes}m`}
+          </span>
+        </button>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {group.types.slice(0, 4).map((t) => (
+            <span
+              key={t}
+              className="inline-block h-2 w-2 rounded-full"
+              style={{ background: TYPE_DOT[t] ?? '#737373' }}
+              title={t}
+            />
+          ))}
+          {group.sites.slice(0, 3).map((s) => (
+            <span
+              key={s}
+              className="rounded-full border border-neutral-800 px-2 py-0.5 text-[10px] text-neutral-400"
+            >
+              {s}
+            </span>
+          ))}
+        </div>
+      </header>
+      {!collapsed && (
+        <ul className="ml-2 flex flex-col gap-2 border-l border-neutral-800 pl-3">
+          {group.nodes.map(renderNode)}
+        </ul>
+      )}
+    </section>
   );
 }
 
