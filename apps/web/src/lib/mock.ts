@@ -211,7 +211,19 @@ export interface MockEdge {
   id: string;
   from_node: string;
   to_node: string;
-  relation_type: 'inferred' | 'explicit' | 'temporal' | 'contradicts' | 'supersedes';
+  relation_type:
+    | 'inferred'
+    | 'explicit'
+    | 'temporal'
+    | 'contradicts'
+    | 'supersedes'
+    | 'user_linked'
+    | 'belongs_to_page'
+    | 'navigated_from'
+    | 'same_session'
+    | 'mentions'
+    | 'extends'
+    | 'cites';
   confidence: number;
   shared_entity: string | null;
 }

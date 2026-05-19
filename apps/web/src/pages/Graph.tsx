@@ -351,11 +351,77 @@ export default function GraphPage() {
         },
         {
           selector: 'edge[relation = "contradicts"]',
-          style: { 'line-color': '#f87171', 'target-arrow-color': '#f87171' },
+          style: {
+            'line-color': '#f87171',
+            'target-arrow-color': '#f87171',
+            'line-style': 'dashed',
+            width: 2,
+          },
         },
         {
           selector: 'edge[relation = "supersedes"]',
           style: { 'line-color': '#34d399', 'target-arrow-color': '#34d399' },
+        },
+        {
+          // Hierarchical edges read top→down on canvas via fcose layering.
+          selector: 'edge[relation = "belongs_to_page"]',
+          style: {
+            'line-color': '#a78bfa',
+            'target-arrow-color': '#a78bfa',
+            width: 1.8,
+            opacity: 0.75,
+            'curve-style': 'taxi',
+            'taxi-direction': 'auto',
+          },
+        },
+        {
+          selector: 'edge[relation = "navigated_from"]',
+          style: {
+            'line-color': '#fb923c',
+            'target-arrow-color': '#fb923c',
+            'target-arrow-shape': 'triangle',
+            width: 1.5,
+            opacity: 0.7,
+            'line-style': 'dashed',
+          },
+        },
+        {
+          selector: 'edge[relation = "same_session"]',
+          style: {
+            'line-color': '#52525b',
+            'target-arrow-shape': 'none',
+            'line-style': 'dotted',
+            opacity: 0.35,
+            width: 0.8,
+          },
+        },
+        {
+          selector: 'edge[relation = "mentions"]',
+          style: {
+            'line-color': '#22d3ee',
+            'target-arrow-color': '#22d3ee',
+            width: 1.2,
+            opacity: 0.7,
+          },
+        },
+        {
+          selector: 'edge[relation = "extends"]',
+          style: {
+            'line-color': '#84cc16',
+            'target-arrow-color': '#84cc16',
+            width: 1.4,
+            opacity: 0.75,
+          },
+        },
+        {
+          selector: 'edge[relation = "cites"]',
+          style: {
+            'line-color': '#facc15',
+            'target-arrow-color': '#facc15',
+            width: 1.4,
+            opacity: 0.75,
+            'line-style': 'dashed',
+          },
         },
         {
           selector: 'edge:selected',
@@ -584,6 +650,30 @@ function Legend({
           />
           Source group (drag to move all)
         </div>
+      </div>
+      <div className="mt-3 border-t border-neutral-800 pt-2">
+        <div className="mb-1 font-medium text-neutral-300">Connections</div>
+        <ul className="space-y-1">
+          {(
+            [
+              ['belongs_to_page', 'page parent', '#a78bfa'],
+              ['navigated_from', 'navigated from', '#fb923c'],
+              ['same_session', 'same session', '#52525b'],
+              ['mentions', 'mentions', '#22d3ee'],
+              ['extends', 'extends', '#84cc16'],
+              ['cites', 'cites', '#facc15'],
+              ['contradicts', 'contradicts', '#f87171'],
+            ] as const
+          ).map(([k, label, color]) => (
+            <li key={k} className="flex items-center gap-2 text-neutral-400">
+              <span
+                className="inline-block h-[2px] w-4 rounded"
+                style={{ background: color }}
+              />
+              <span>{label}</span>
+            </li>
+          ))}
+        </ul>
       </div>
     </div>
   );

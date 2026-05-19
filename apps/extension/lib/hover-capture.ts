@@ -196,6 +196,9 @@ function onCaptureClick(e: MouseEvent): void {
         mediaUrl: extracted.media_url ?? undefined,
         pageTitle: document.title,
         capturedAt: new Date().toISOString(),
+        // Where the user came from before landing on this page — used by
+        // process-node to wire `navigated_from` parent edges.
+        referrerUrl: document.referrer || null,
         // Canonical shape — process-node will fill any null fields with LLM.
         extracted,
       },

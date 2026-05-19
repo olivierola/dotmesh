@@ -28,6 +28,8 @@ import {
   fallbackExtractedFromContent,
   completeExtractedWithLLM,
 } from '../_shared/extracted.ts';
+import { buildHierarchyEdges } from '../_shared/hierarchy.ts';
+import { declareLLMLinks } from '../_shared/llm-links.ts';
 
 interface ProcessInput {
   node_id: string;
@@ -112,8 +114,9 @@ Deno.serve(async (req) => {
       return errorResponse('update_failed', 500, updateErr);
     }
 
-    // ---- Step 4: edge inference --------------------------------------------
+    // ---- Step 4a: classic edge inference (entity + semantic) --------------
     let edgesCreated = 0;
+    let inferredIds: string[] = [];
     try {
       const inferred = await inferEdgesForNode(client, {
         id: node.id,
@@ -122,8 +125,48 @@ Deno.serve(async (req) => {
         embedding: embedding ?? (node.embedding as number[] | null),
       });
       edgesCreated = inferred.length;
+      inferredIds = inferred.map((e) => e.to_node);
     } catch (e) {
       console.warn('edge inference failed (non-fatal)', e);
+    }
+
+    // ---- Step 4b: hierarchical edges (page / nav / session) ----------------
+    let pageParent: string | null = null;
+    let navParent: string | null = null;
+    let sessionLinks = 0;
+    try {
+      const r = await buildHierarchyEdges({
+        service: client,
+        userId: node.user_id,
+        nodeId: node.id,
+        node: {
+          source_url: node.source_url as string | null,
+          source_app: node.source_app as string | null,
+          metadata: mergedMetadata,
+          node_type: extracted.node_type,
+        },
+        extracted,
+      });
+      pageParent = r.page_parent;
+      navParent = r.nav_parent;
+      sessionLinks = r.session_links;
+    } catch (e) {
+      console.warn('hierarchy edges failed (non-fatal)', e);
+    }
+
+    // ---- Step 4c: LLM-declared semantic links -----------------------------
+    let llmLinks = { added: 0, types: {} as Record<string, number> };
+    try {
+      llmLinks = await declareLLMLinks({
+        service: client,
+        userId: node.user_id,
+        nodeId: node.id,
+        extracted,
+        rawContent: node.content ?? '',
+        candidateIds: inferredIds,
+      });
+    } catch (e) {
+      console.warn('llm link extractor failed (non-fatal)', e);
     }
 
     // ---- Step 5a: deterministic collection classifier -----------------------
@@ -173,6 +216,10 @@ Deno.serve(async (req) => {
       node_type: extracted.node_type,
       entities_count: entities.length,
       edges_created: edgesCreated,
+      page_parent: pageParent,
+      nav_parent: navParent,
+      session_links: sessionLinks,
+      llm_links: llmLinks,
       collections_assigned: collectionsAssigned + llmCollectionsAdded,
       collection_created: createdCollectionId,
       extraction_method: extracted.extraction_method,

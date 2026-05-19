@@ -15,6 +15,7 @@ import { scoreSignal, type SignalInput } from '@/lib/scorer';
 import { shouldAttemptInjection, refreshKeywordsIfStale } from '@/lib/trigger';
 import { getAuth } from '@/lib/auth';
 import { extractManual, type Extracted, type NodeType } from '@/lib/extract';
+import { touchSession } from '@/lib/session';
 
 function manualExtracted(opts: {
   text: string;
@@ -177,6 +178,7 @@ async function manualCapture(input: {
     return;
   }
   const fingerprint = await fingerprintOf('manual', input.content);
+  const session = await touchSession(input.url || null);
   await db.queue.add({
     status: 'pending',
     payload: {
@@ -193,6 +195,9 @@ async function manualCapture(input: {
         mediaUrl: input.extracted.media_url ?? undefined,
         capturedAt: input.extracted.source_extracted_at,
         extracted: input.extracted,
+        session_id: session.session_id,
+        session_is_new: session.is_new,
+        previous_url: session.previous_url,
       },
     },
     attempts: 0,
@@ -283,6 +288,10 @@ async function handleSignal(
       unknown
     >;
 
+    // Session tracking — every capture extends the sliding window and
+    // remembers the previous URL so process-node can wire navigated_from.
+    const session = await touchSession(signal.url ?? null);
+
     // Defensive deep-clone so any non-serializable refs raise here (with details
     // in the error) instead of silently breaking the Dexie write.
     let cleanMeta: Record<string, unknown>;
@@ -294,6 +303,10 @@ async function handleSignal(
           novelty: result.novelty,
           intent: result.intent,
           signalType: signal.signalType,
+          session_id: session.session_id,
+          session_is_new: session.is_new,
+          previous_url: session.previous_url,
+          referrer_url: (metaRest as { referrerUrl?: string }).referrerUrl ?? null,
         }),
       );
     } catch (e) {
