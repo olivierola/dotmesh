@@ -109,7 +109,6 @@ export default function ForceGraphCanvas({
   const fgRef = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
-  const dragSeed = useRef<{ id: string; x: number; y: number } | null>(null);
 
   // Measure the container so the canvas matches it. We start at 0,0 so
   // the canvas stays unmounted until we know its real size — prevents the
@@ -203,66 +202,23 @@ export default function ForceGraphCanvas({
           enableNodeDrag={true}
           enablePanInteraction={true}
           enableZoomInteraction={true}
-          onNodeDragStart={(node: unknown) => {
-            const n = node as CanvasNode;
-            dragSeed.current = { id: n.id, x: n.x ?? 0, y: n.y ?? 0 };
-            // Reheat the (probably cooled-down) simulation so neighbours
-            // actually drift toward the dragged node instead of staying
-            // frozen in place.
+          // Keep drag handlers minimal — let react-force-graph do its
+          // built-in drag (which pins fx/fy during the drag). We reheat
+          // the simulation on start so neighbours respond, and explicitly
+          // release fx/fy on end so the user can drag the SAME node again
+          // (and other nodes after it) without getting stuck on the first
+          // pin.
+          onNodeDragStart={() => {
             fgRef.current?.d3ReheatSimulation?.();
           }}
-          onNodeDrag={(node: unknown) => {
-            const seed = dragSeed.current;
-            const n = node as CanvasNode;
-            if (!seed || seed.id !== n.id) return;
-            if (!n.isHub) return;
-            const dx = (n.x ?? 0) - seed.x;
-            const dy = (n.y ?? 0) - seed.y;
-            const members = membersByHub?.get(n.id) ?? [];
-            for (const mid of members) {
-              const m = nodes.find((x) => x.id === mid);
-              if (!m) continue;
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const o = m as any;
-              if (o.__dragOffsetX == null) {
-                o.__dragOffsetX = (o.x ?? 0) - seed.x;
-                o.__dragOffsetY = (o.y ?? 0) - seed.y;
-              }
-              o.fx = seed.x + dx + o.__dragOffsetX;
-              o.fy = seed.y + dy + o.__dragOffsetY;
-            }
-          }}
           onNodeDragEnd={(node: unknown) => {
-            const n = node as CanvasNode;
-            if (n.isHub) {
-              // For hubs only: pin the hub and every member at their dropped
-              // position so the cluster the user just shaped stays where
-              // they put it. Right-click on any node unpins it.
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const o = n as any;
-              o.fx = n.x;
-              o.fy = n.y;
-              const members = membersByHub?.get(n.id) ?? [];
-              for (const mid of members) {
-                const m = nodes.find((x) => x.id === mid);
-                if (!m) continue;
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                const om = m as any;
-                om.fx = m.x;
-                om.fy = m.y;
-                delete om.__dragOffsetX;
-                delete om.__dragOffsetY;
-              }
-            }
-            // For leaf nodes we DON'T pin — d3-force keeps them mobile and
-            // the link force naturally reflects the new distance the user
-            // pulled. If they want a leaf to stay put, right-click pins.
-            dragSeed.current = null;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const o = node as any;
+            delete o.fx;
+            delete o.fy;
           }}
           onNodeClick={(node: unknown) => {
-            const n = node as CanvasNode;
-            onSelect?.(n);
-            fgRef.current?.centerAt?.(n.x, n.y, 600);
+            onSelect?.(node as CanvasNode);
           }}
           onNodeRightClick={(node: unknown) => {
             // Right-click toggles pin: if pinned (fx set) release it,
