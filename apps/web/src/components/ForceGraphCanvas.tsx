@@ -169,6 +169,10 @@ export default function ForceGraphCanvas({
           onNodeDragStart={(node: unknown) => {
             const n = node as CanvasNode;
             dragSeed.current = { id: n.id, x: n.x ?? 0, y: n.y ?? 0 };
+            // Reheat the (probably cooled-down) simulation so neighbours
+            // actually drift toward the dragged node instead of staying
+            // frozen in place.
+            fgRef.current?.d3ReheatSimulation?.();
           }}
           onNodeDrag={(node: unknown) => {
             const seed = dragSeed.current;
@@ -235,6 +239,24 @@ export default function ForceGraphCanvas({
               const label = n.label.length > 28 ? n.label.slice(0, 26) + '…' : n.label;
               ctx.fillText(label, n.x ?? 0, (n.y ?? 0) + r + 3);
             }
+          }}
+          // CRITICAL: when nodeCanvasObject is used, react-force-graph delegates
+          // hit-testing to nodePointerAreaPaint. If we don't paint a pickable
+          // shape here, every click falls through to the pan/zoom handler —
+          // which is exactly what produces the "whole graph moves as a block"
+          // bug. Paint a disc slightly larger than the visible shape so small
+          // nodes stay clickable too.
+          nodePointerAreaPaint={(
+            node: unknown,
+            color: string,
+            ctx: CanvasRenderingContext2D,
+          ) => {
+            const n = node as CanvasNode;
+            const r = nodeRadius(n) + 4;
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(n.x ?? 0, n.y ?? 0, r, 0, Math.PI * 2);
+            ctx.fill();
           }}
           // We use the default link rendering for crisp lines + arrows but
           // colour them per relation type via linkColor / linkWidth so the
