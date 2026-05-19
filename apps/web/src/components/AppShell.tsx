@@ -15,8 +15,6 @@ const NAV = [
   { to: '/insights', label: 'Insights', icon: '✨' },
   { to: '/rules', label: 'Rules', icon: '🛡' },
   { to: '/connectors', label: 'Connectors', icon: '🔗' },
-  { to: '/webhooks', label: 'Webhooks', icon: '📡' },
-  { to: '/embed', label: 'Embed', icon: '📦' },
   { to: '/settings', label: 'Settings', icon: '⚙' },
 ];
 
