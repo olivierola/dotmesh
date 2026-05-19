@@ -5,6 +5,13 @@
  */
 
 const HARD_BLOCKED: Array<string | RegExp> = [
+  // Mesh itself — never capture the app the user is reviewing their memory in,
+  // otherwise we create a feedback loop (you read a Mesh page, the extension
+  // captures it, that capture shows up on the page, you read it again…).
+  'dotmesh.vercel.app',
+  /^https?:\/\/[^/]*dotmesh[^/]*\.vercel\.app/i,
+  /^https?:\/\/localhost:5173/i,
+  /^https?:\/\/127\.0\.0\.1:5173/i,
   // Mail
   'mail.google.com',
   'outlook.live.com',

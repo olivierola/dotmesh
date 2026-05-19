@@ -16,6 +16,7 @@ import { shouldAttemptInjection, refreshKeywordsIfStale } from '@/lib/trigger';
 import { getAuth } from '@/lib/auth';
 import { extractManual, type Extracted, type NodeType } from '@/lib/extract';
 import { touchSession } from '@/lib/session';
+import { isDomainBlocked } from '@/lib/blocked-domains';
 
 function manualExtracted(opts: {
   text: string;
@@ -177,6 +178,11 @@ async function manualCapture(input: {
     notify('Capture paused', 'Resume from the extension popup.');
     return;
   }
+  // Never capture the Mesh app itself — we'd loop indefinitely.
+  if (input.url && (await isDomainBlocked(input.url))) {
+    notify('Skipped', 'This site is on the blocklist (Mesh / sensitive domains).');
+    return;
+  }
   const fingerprint = await fingerprintOf('manual', input.content);
   const session = await touchSession(input.url || null);
   await db.queue.add({
@@ -248,6 +254,11 @@ async function handleSignal(
   metadata: Record<string, unknown> = {},
 ): Promise<{ ok: boolean; decision: string; error?: string }> {
   try {
+    // Defence-in-depth: even if the content script forgot to check, never
+    // ingest signals from a blocked domain (e.g. the Mesh SaaS itself).
+    if (signal.url && (await isDomainBlocked(signal.url))) {
+      return { ok: false, decision: 'blocked_domain' };
+    }
     // Skip everything if the user is paused or signed out
     const paused = await getSetting<boolean>('paused', false);
     if (paused) return { ok: false, decision: 'paused' };

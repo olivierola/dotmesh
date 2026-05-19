@@ -18,24 +18,6 @@ interface CaptureTarget {
   type: ElementType;
 }
 
-const CAPTURABLE_SELECTOR = [
-  'p',
-  'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-  'blockquote',
-  'pre',
-  'code:not(pre code)',
-  'li',
-  'img',
-  'video',
-  'figure',
-  'article',
-  '[role="article"]',
-  // Common social/feed item containers — best-effort
-  '[data-testid="tweet"]',
-  '[data-test-id="post-content"]',
-  '.feed-shared-update-v2',
-].join(',');
-
 const MIN_TEXT_LEN = 20;
 const BUTTON_SIZE = 28;
 const BUTTON_OFFSET = 6;
