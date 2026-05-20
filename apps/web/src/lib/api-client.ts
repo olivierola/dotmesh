@@ -590,6 +590,77 @@ export const api = {
     });
   },
 
+  // ----- Custom instructions -----
+  async listInstructions(): Promise<
+    Array<{
+      id: string;
+      title: string;
+      context: string | null;
+      instruction: string;
+      enabled: boolean;
+      icon: string | null;
+      color: string | null;
+      sort_order: number;
+      created_at: string;
+      updated_at: string;
+      indexed: boolean;
+    }>
+  > {
+    const { instructions } = await realFetch<{
+      instructions: Array<{
+        id: string;
+        title: string;
+        context: string | null;
+        instruction: string;
+        enabled: boolean;
+        icon: string | null;
+        color: string | null;
+        sort_order: number;
+        created_at: string;
+        updated_at: string;
+        indexed: boolean;
+      }>;
+    }>('/instructions');
+    return instructions;
+  },
+
+  async createInstruction(input: {
+    title: string;
+    context?: string;
+    instruction: string;
+    icon?: string;
+    color?: string;
+    enabled?: boolean;
+  }): Promise<{ id: string }> {
+    const { instruction } = await realFetch<{ instruction: { id: string } }>(
+      '/instructions',
+      { method: 'POST', body: JSON.stringify(input) },
+    );
+    return instruction;
+  },
+
+  async updateInstruction(
+    id: string,
+    patch: {
+      title?: string;
+      context?: string | null;
+      instruction?: string;
+      icon?: string | null;
+      color?: string | null;
+      enabled?: boolean;
+      sort_order?: number;
+    },
+  ): Promise<void> {
+    await realFetch(`/instructions/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  async deleteInstruction(id: string): Promise<void> {
+    await realFetch(`/instructions/${id}`, { method: 'DELETE' });
+  },
+
   async reclassifyOrphansWithLLM(): Promise<{
     ok: boolean;
     scanned: number;

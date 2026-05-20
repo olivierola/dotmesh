@@ -52,6 +52,9 @@ export async function inject(
   should_inject: boolean;
   context_block: string | null;
   node_ids: string[];
+  /** IDs of custom instructions that were matched and embedded in the
+   *  context_block. Useful for telemetry; the block already contains them. */
+  instruction_ids?: string[];
 } | null> {
   try {
     const res = await apiFetch('/inject', {
@@ -63,6 +66,7 @@ export async function inject(
       should_inject: boolean;
       context_block: string | null;
       node_ids: string[];
+      instruction_ids?: string[];
     };
   } catch (e) {
     console.warn('[Mesh] inject error', e);

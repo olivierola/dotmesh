@@ -19,6 +19,7 @@ import AssistantPage from '@/pages/Assistant';
 import SlackChannelsPage from '@/pages/SlackChannels';
 import ExtensionBridgePage from '@/pages/ExtensionBridge';
 import CollectionsPage from '@/pages/Collections';
+import InstructionsPage from '@/pages/Instructions';
 import AppShell from '@/components/AppShell';
 
 /**
@@ -147,6 +148,7 @@ export default function App() {
       <Route path="/assistant" element={<Shell><AssistantPage /></Shell>} />
       <Route path="/timeline" element={<Shell><TimelinePage /></Shell>} />
       <Route path="/collections" element={<Shell><CollectionsPage /></Shell>} />
+      <Route path="/instructions" element={<Shell><InstructionsPage /></Shell>} />
       <Route path="/search" element={<Shell><SearchPage /></Shell>} />
       <Route path="/graph" element={<Shell><GraphPage /></Shell>} />
       <Route path="/insights" element={<Shell><InsightsPage /></Shell>} />

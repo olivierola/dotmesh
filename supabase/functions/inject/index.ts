@@ -54,12 +54,47 @@ function relativeTime(iso: string): string {
   return `${Math.floor(diff / (30 * day))} months ago`;
 }
 
-function formatContextBlock(hits: SearchHit[], originalQuery: string): string {
-  const lines = hits.map((h) => {
-    const text = (h.summary ?? h.content).slice(0, 280).replace(/\s+/g, ' ').trim();
-    return `- (${relativeTime(h.created_at)}) ${text}`;
-  });
-  let block = `[Context from Mesh — your personal memory]\n${lines.join('\n')}\n\nYour query:\n${originalQuery}`;
+interface InstructionMatch {
+  id: string;
+  title: string;
+  context: string | null;
+  instruction: string;
+  score: number;
+}
+
+/**
+ * Compose the final block injected ahead of the user's query.
+ *
+ * Two stacked sections (each optional):
+ *   1. user instructions ranked by relevance to the query,
+ *   2. memory excerpts from the personal graph.
+ *
+ * Either, both, or neither may be present. Caller has already gated on
+ * "at least one of the two non-empty" — this function is just formatting.
+ */
+function formatContextBlock(
+  hits: SearchHit[],
+  instructions: InstructionMatch[],
+  originalQuery: string,
+): string {
+  const sections: string[] = [];
+
+  if (instructions.length > 0) {
+    const instr = instructions
+      .map((i) => `- ${i.title}: ${i.instruction.replace(/\s+/g, ' ').trim()}`)
+      .join('\n');
+    sections.push(`[Custom instructions from Mesh]\n${instr}`);
+  }
+
+  if (hits.length > 0) {
+    const lines = hits.map((h) => {
+      const text = (h.summary ?? h.content).slice(0, 280).replace(/\s+/g, ' ').trim();
+      return `- (${relativeTime(h.created_at)}) ${text}`;
+    });
+    sections.push(`[Context from Mesh — your personal memory]\n${lines.join('\n')}`);
+  }
+
+  let block = `${sections.join('\n\n')}\n\nYour query:\n${originalQuery}`;
   if (block.length > MAX_INJECTED_CHARS) {
     block = block.slice(0, MAX_INJECTED_CHARS - 20) + '\n...';
   }
@@ -143,50 +178,63 @@ Deno.serve(async (req) => {
     const embedding = await jinaEmbed(input.query);
     const queryVec = embedding ?? new Array(1024).fill(0);
 
-    const { data: hits, error } = await client.rpc('hybrid_search', {
-      p_query_text: input.query,
-      p_query_embedding: queryVec,
-      p_top_k: input.top_k,
-      p_filter_tags: null,
-      p_filter_since: null,
-      p_filter_source: null,
-    });
+    // Run memory search and instruction matching in parallel — both need
+    // the same query embedding so we can fire them concurrently.
+    const [hitsRes, instructionsRes] = await Promise.all([
+      client.rpc('hybrid_search', {
+        p_query_text: input.query,
+        p_query_embedding: queryVec,
+        p_top_k: input.top_k,
+        p_filter_tags: null,
+        p_filter_since: null,
+        p_filter_source: null,
+      }),
+      embedding
+        ? client.rpc('match_instructions', {
+            p_user_id: userId,
+            p_query_embedding: queryVec,
+            p_top_k: 3,
+            p_min_score: 0.55,
+          })
+        : Promise.resolve({ data: [], error: null }),
+    ]);
 
-    if (error) {
-      console.error('inject search error', error);
-      return errorResponse('search_failed', 500, error);
+    if (hitsRes.error) {
+      console.error('inject search error', hitsRes.error);
+      return errorResponse('search_failed', 500, hitsRes.error);
     }
 
-    const allHits = (hits ?? []) as SearchHit[];
-    const relevant = allHits.filter((h) => h.score >= RELEVANCE_THRESHOLD).slice(0, MAX_NODES);
+    const allHits = (hitsRes.data ?? []) as SearchHit[];
+    const relevant = allHits
+      .filter((h) => h.score >= RELEVANCE_THRESHOLD)
+      .slice(0, MAX_NODES);
 
-    if (relevant.length === 0) {
-      return jsonResponse({
-        should_inject: false,
-        context_block: null,
-        node_ids: [],
-        injection_id: null,
-        reason: 'no_relevant_context',
-      });
-    }
+    const instructions = (instructionsRes.data ?? []) as InstructionMatch[];
 
-    // Apply Context Rules
+    // Apply Context Rules to memory hits only (instructions are user-authored
+    // and not subject to redaction).
     const service = createServiceClient();
     const rules = await loadUserRules(client, userId);
     const { kept, droppedReasons } = applyContextRules(rules, input.target_agent, relevant);
 
-    if (kept.length === 0) {
+    if (kept.length === 0 && instructions.length === 0) {
+      // No memory worth injecting and no instruction matches — skip.
+      const reason =
+        relevant.length === 0
+          ? 'no_relevant_context'
+          : `blocked_by_rule:${JSON.stringify(droppedReasons)}`;
       return jsonResponse({
         should_inject: false,
         context_block: null,
         node_ids: [],
+        instruction_ids: [],
         injection_id: null,
-        reason: `blocked_by_rule:${JSON.stringify(droppedReasons)}`,
+        reason,
       });
     }
     const filtered = kept;
 
-    const contextBlock = formatContextBlock(filtered, input.query);
+    const contextBlock = formatContextBlock(filtered, instructions, input.query);
     const queryHash = await sha256Hex(input.query);
     const latency = Date.now() - start;
 
@@ -214,6 +262,7 @@ Deno.serve(async (req) => {
       should_inject: true,
       context_block: contextBlock,
       node_ids: filtered.map((h) => h.id),
+      instruction_ids: instructions.map((i) => i.id),
       injection_id: log?.id ?? null,
     });
   } catch (e) {
