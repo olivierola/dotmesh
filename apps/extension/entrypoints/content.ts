@@ -24,26 +24,46 @@ export default defineContentScript({
   matches: ['<all_urls>'],
   runAt: 'document_idle',
   async main() {
+    console.log('[Mesh] content script loaded on', window.location.hostname);
+
     // Early bail-out on sensitive domains. We never inject NOR capture.
-    if (await isDomainBlocked(window.location.href)) {
-      return;
+    try {
+      if (await isDomainBlocked(window.location.href)) {
+        console.log('[Mesh] domain blocked, bailing');
+        return;
+      }
+    } catch (err) {
+      // Don't let a blocklist failure (e.g. IndexedDB unavailable in some
+      // contexts) take the entire content script down with it. The hard-
+      // coded blocklist still applied synchronously inside isDomainBlocked;
+      // the failing branch is only the user-defined extras.
+      console.warn('[Mesh] domain block check failed (continuing)', err);
     }
 
     const hostname = window.location.hostname;
     const adapter = findAdapter(hostname);
+    console.log('[Mesh] adapter for', hostname, '=', adapter?.label ?? '(none)');
 
     if (adapter) {
-      installAgentInjector(adapter);
-      installAgentSessionSignal(hostname);
+      try {
+        installAgentInjector(adapter);
+        console.log('[Mesh] injector installed for', adapter.label);
+      } catch (err) {
+        console.error('[Mesh] injector install failed', err);
+      }
+      try {
+        installAgentSessionSignal(hostname);
+      } catch (err) {
+        console.warn('[Mesh] session signal install failed', err);
+      }
     } else {
-      installReadingSignal();
-      installSearchSignal(hostname);
-      installActiveWorkSignal(hostname);
+      try { installReadingSignal(); } catch (err) { console.warn('[Mesh] reading signal failed', err); }
+      try { installSearchSignal(hostname); } catch (err) { console.warn('[Mesh] search signal failed', err); }
+      try { installActiveWorkSignal(hostname); } catch (err) { console.warn('[Mesh] active work signal failed', err); }
     }
 
-    // Hover-to-capture and attention tracking run everywhere (except blocked domains).
-    installHoverCapture();
-    installAttentionTracker();
+    try { installHoverCapture(); } catch (err) { console.warn('[Mesh] hover capture install failed', err); }
+    try { installAttentionTracker(); } catch (err) { console.warn('[Mesh] attention tracker install failed', err); }
   },
 });
 
