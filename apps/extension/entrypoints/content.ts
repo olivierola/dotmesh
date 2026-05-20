@@ -196,21 +196,40 @@ function installAgentInjector(adapter: AgentAdapter): void {
   let suspendInjection = false;
 
   /**
-   * Heart of the interception: read the current draft, ask the background
-   * for context+instructions, show the overlay, and on accept replace the
-   * draft and resubmit. Returns true when interception happened (caller
-   * should swallow the original event), false when nothing needed doing.
+   * Synchronous decision: should we intercept this submission attempt?
+   * Reads the current draft and runs the cheap gating rules. If this
+   * returns false the caller must let the original event proceed —
+   * preventDefault must NOT have been called yet.
    */
-  const handleSubmissionAttempt = async (input: HTMLElement): Promise<boolean> => {
-    if (suspendInjection || isShowingOverlay) return false;
+  const shouldIntercept = (input: HTMLElement): { ok: true; draft: string } | { ok: false } => {
+    if (suspendInjection || isShowingOverlay) return { ok: false };
     const draft = readDraft(adapter, input).trim();
-    if (!draft) return false;
-    if (draft === lastInjectedForQuery || draft === pendingQuery) return false;
-    if (draft.length < 8) return false;
-    if (TRIVIAL_PATTERNS.some((re) => re.test(draft))) return false;
+    if (!draft) return { ok: false };
+    if (draft === lastInjectedForQuery || draft === pendingQuery) return { ok: false };
+    if (draft.length < 8) return { ok: false };
+    if (TRIVIAL_PATTERNS.some((re) => re.test(draft))) return { ok: false };
+    return { ok: true, draft };
+  };
 
+  /**
+   * Heart of the interception: ask the background for context+instructions,
+   * show the overlay, and on accept replace the draft and resubmit. Caller
+   * is expected to have already preventDefault'd the originating event.
+   */
+  const runInjectionFlow = async (input: HTMLElement, draft: string): Promise<void> => {
     pendingQuery = draft;
     isShowingOverlay = true;
+
+    // Watchdog: if anything below stalls (no background response, no overlay
+    // ack…) clear the gating flags after 10s so the next Enter isn't
+    // permanently blocked.
+    const watchdog = setTimeout(() => {
+      if (isShowingOverlay) {
+        console.warn('[Mesh] injection flow watchdog tripped — clearing state');
+        isShowingOverlay = false;
+        pendingQuery = '';
+      }
+    }, 10_000);
 
     let context: InjectResponse | null = null;
     try {
@@ -222,6 +241,8 @@ function installAgentInjector(adapter: AgentAdapter): void {
       });
     } catch (err) {
       console.warn('[Mesh] inject request failed', err);
+    } finally {
+      clearTimeout(watchdog);
     }
 
     if (!context?.should_inject || !context.context_block) {
@@ -229,7 +250,7 @@ function installAgentInjector(adapter: AgentAdapter): void {
       isShowingOverlay = false;
       pendingQuery = '';
       reSubmit(adapter, input);
-      return true;
+      return;
     }
 
     const previews = context.context_block
@@ -269,28 +290,33 @@ function installAgentInjector(adapter: AgentAdapter): void {
         },
       },
     );
-    return true;
   };
 
   // ---- Intercept Enter (without shift) on the input itself ----
-  const onKeyDown = async (e: KeyboardEvent) => {
+  // The decision to intercept is purely synchronous: only AFTER we've
+  // confirmed we'll actually run the injection flow do we preventDefault.
+  // Otherwise the host page's own Enter handler runs as usual — critical
+  // for short / trivial prompts that we deliberately don't intercept.
+  const onKeyDown = (e: KeyboardEvent) => {
     if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
     if (isShowingOverlay || suspendInjection) return;
     const input = findInput(adapter);
     if (!input) return;
-    // Only intercept if the keydown originated inside our input.
     if (!input.contains(e.target as Node) && e.target !== input) return;
-    // Pre-emptively block so the host page doesn't submit while we wait.
+    const decision = shouldIntercept(input);
+    if (!decision.ok) return; // Let the host handle this submission.
     e.preventDefault();
     e.stopImmediatePropagation();
-    await handleSubmissionAttempt(input);
+    runInjectionFlow(input, decision.draft).catch((err) => {
+      console.warn('[Mesh] injection flow failed', err);
+      isShowingOverlay = false;
+      pendingQuery = '';
+    });
   };
 
   // ---- Intercept clicks on the submit button ----
-  // Many users click "Send" instead of pressing Enter (mobile, mouse, custom
-  // keyboard configs). We intercept those too — capture phase so we run
-  // before React's own click handler.
-  const onClick = async (e: MouseEvent) => {
+  // Same gating: only preventDefault when we'll actually intercept.
+  const onClick = (e: MouseEvent) => {
     if (isShowingOverlay || suspendInjection) return;
     const submit = findSubmit(adapter);
     if (!submit) return;
@@ -298,9 +324,15 @@ function installAgentInjector(adapter: AgentAdapter): void {
     if (!target || !(submit === target || submit.contains(target))) return;
     const input = findInput(adapter);
     if (!input) return;
+    const decision = shouldIntercept(input);
+    if (!decision.ok) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    await handleSubmissionAttempt(input);
+    runInjectionFlow(input, decision.draft).catch((err) => {
+      console.warn('[Mesh] injection flow failed', err);
+      isShowingOverlay = false;
+      pendingQuery = '';
+    });
   };
 
   document.addEventListener('keydown', onKeyDown, true);
