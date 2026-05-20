@@ -184,6 +184,35 @@ export default function ForceGraphCanvas({
     fg.d3ReheatSimulation?.();
   }, [size.w, size.h]);
 
+  // Safety net: if a drag is interrupted (mouse left the window, ALT-tab
+  // mid-drag, etc.) onNodeDragEnd never fires and the dragged node stays
+  // pinned by fx/fy forever — every subsequent drag attempt feels "stuck"
+  // because the first node keeps tugging the graph from its frozen
+  // position. Listen for mouseup anywhere on the document and release
+  // pinned coordinates from every node.
+  useEffect(() => {
+    const release = () => {
+      for (const n of nodes) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const o = n as any;
+        if (typeof o.fx === 'number' || typeof o.fy === 'number') {
+          delete o.fx;
+          delete o.fy;
+        }
+      }
+    };
+    document.addEventListener('mouseup', release);
+    document.addEventListener('pointerup', release);
+    document.addEventListener('mouseleave', release);
+    window.addEventListener('blur', release);
+    return () => {
+      document.removeEventListener('mouseup', release);
+      document.removeEventListener('pointerup', release);
+      document.removeEventListener('mouseleave', release);
+      window.removeEventListener('blur', release);
+    };
+  }, [nodes]);
+
   const ready = size.w > 0 && size.h > 0;
 
   return (
@@ -269,7 +298,12 @@ export default function ForceGraphCanvas({
             ctx: CanvasRenderingContext2D,
           ) => {
             const n = node as CanvasNode;
-            const r = nodeRadius(n) + 4;
+            // Make the hit-test area substantially larger than the visible
+            // node so small leaves remain easy to grab on desktop (mouse
+            // pointer is a 1px target — without padding many nodes feel
+            // unpickable). Hubs already render large so they only need a
+            // small buffer.
+            const r = nodeRadius(n) + (n.isHub ? 4 : 10);
             ctx.fillStyle = color;
             ctx.beginPath();
             ctx.arc(n.x ?? 0, n.y ?? 0, r, 0, Math.PI * 2);
