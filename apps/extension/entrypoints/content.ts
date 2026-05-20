@@ -325,18 +325,28 @@ function installAgentInjector(adapter: AgentAdapter): void {
   };
 
   // ---- Intercept Enter (without shift) on the input itself ----
-  // The decision to intercept is purely synchronous: only AFTER we've
-  // confirmed we'll actually run the injection flow do we preventDefault.
-  // Otherwise the host page's own Enter handler runs as usual — critical
-  // for short / trivial prompts that we deliberately don't intercept.
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
-    if (isShowingOverlay || suspendInjection) return;
+    console.log('[Mesh] Enter pressed; checking interception…');
+    if (isShowingOverlay || suspendInjection) {
+      console.log('[Mesh] skipped: overlay=' + isShowingOverlay + ' suspend=' + suspendInjection);
+      return;
+    }
     const input = findInput(adapter);
-    if (!input) return;
-    if (!input.contains(e.target as Node) && e.target !== input) return;
+    if (!input) {
+      console.log('[Mesh] no input element matched the adapter selectors');
+      return;
+    }
+    if (!input.contains(e.target as Node) && e.target !== input) {
+      console.log('[Mesh] keydown target outside the adapter input — letting it through', e.target);
+      return;
+    }
     const decision = shouldIntercept(input);
-    if (!decision.ok) return; // Let the host handle this submission.
+    if (!decision.ok) {
+      console.log('[Mesh] shouldIntercept declined; letting host handle the Enter');
+      return;
+    }
+    console.log('[Mesh] intercepting Enter, draft length=' + decision.draft.length);
     e.preventDefault();
     e.stopImmediatePropagation();
     runInjectionFlow(input, decision.draft).catch((err) => {
@@ -347,17 +357,24 @@ function installAgentInjector(adapter: AgentAdapter): void {
   };
 
   // ---- Intercept clicks on the submit button ----
-  // Same gating: only preventDefault when we'll actually intercept.
   const onClick = (e: MouseEvent) => {
     if (isShowingOverlay || suspendInjection) return;
     const submit = findSubmit(adapter);
     if (!submit) return;
     const target = e.target as Node | null;
     if (!target || !(submit === target || submit.contains(target))) return;
+    console.log('[Mesh] submit button click intercepted; checking…');
     const input = findInput(adapter);
-    if (!input) return;
+    if (!input) {
+      console.log('[Mesh] click: no input element');
+      return;
+    }
     const decision = shouldIntercept(input);
-    if (!decision.ok) return;
+    if (!decision.ok) {
+      console.log('[Mesh] click: shouldIntercept declined');
+      return;
+    }
+    console.log('[Mesh] intercepting click, draft length=' + decision.draft.length);
     e.preventDefault();
     e.stopImmediatePropagation();
     runInjectionFlow(input, decision.draft).catch((err) => {
@@ -369,6 +386,20 @@ function installAgentInjector(adapter: AgentAdapter): void {
 
   document.addEventListener('keydown', onKeyDown, true);
   document.addEventListener('click', onClick, true);
+
+  // DIAG: catch-all listener that fires on every keydown so we can tell
+  // whether Enter is even reaching our content script context. If this
+  // never fires either, the event lives in an iframe/shadow root we
+  // don't have access to from this listener.
+  window.addEventListener(
+    'keydown',
+    (e) => {
+      if (e.key === 'Enter') {
+        console.log('[Mesh] (diag) window keydown Enter, target=', e.target);
+      }
+    },
+    true,
+  );
 
   /**
    * Submit the draft as if the user had done it. We try, in order:
