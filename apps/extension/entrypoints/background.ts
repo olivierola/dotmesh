@@ -234,19 +234,37 @@ async function handleInjectRequest(
 ): Promise<{ should_inject: boolean; context_block: string | null; node_ids: string[] } | null> {
   // Gate 1: auth
   const auth = await getAuth();
-  if (!auth) return null;
+  if (!auth) {
+    console.log('[Mesh] inject skipped: not authenticated');
+    return null;
+  }
 
   // Gate 2: pause toggle
   const paused = await getSetting<boolean>('paused', false);
-  if (paused) return null;
+  if (paused) {
+    console.log('[Mesh] inject skipped: paused');
+    return null;
+  }
 
-  // Gate 3: local trigger scorer — skip cheap obvious rejects without an API call
+  // Gate 3: local trigger scorer — cheap obvious-reject without an API call
   const trigger = await shouldAttemptInjection(query);
+  console.log('[Mesh] inject trigger:', trigger.reason, 'ok=', trigger.ok);
   if (!trigger.ok) {
     return { should_inject: false, context_block: null, node_ids: [] };
   }
 
-  return inject(query, targetAgent);
+  const result = await inject(query, targetAgent);
+  console.log(
+    '[Mesh] inject result:',
+    result
+      ? {
+          should_inject: result.should_inject,
+          nodes: result.node_ids?.length ?? 0,
+          instructions: (result as { instruction_ids?: string[] }).instruction_ids?.length ?? 0,
+        }
+      : 'null',
+  );
+  return result;
 }
 
 async function handleSignal(

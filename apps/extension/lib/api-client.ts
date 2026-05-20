@@ -74,6 +74,24 @@ export async function inject(
   }
 }
 
+/**
+ * Returns true if the user has at least one enabled custom instruction.
+ * Used by the trigger scorer to keep the /inject path warm even when no
+ * memory keyword matches (instructions are typically prompt-agnostic).
+ */
+export async function fetchHasEnabledInstructions(): Promise<boolean> {
+  try {
+    const res = await apiFetch('/instructions');
+    if (!res.ok) return false;
+    const data = (await res.json()) as {
+      instructions: Array<{ enabled: boolean }>;
+    };
+    return (data.instructions ?? []).some((i) => i.enabled);
+  } catch {
+    return false;
+  }
+}
+
 /** Fast cached recent-node fingerprints for the trigger scorer. */
 export async function fetchRecentNodeKeywords(): Promise<string[]> {
   try {

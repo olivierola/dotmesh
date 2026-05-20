@@ -217,6 +217,12 @@ function installAgentInjector(adapter: AgentAdapter): void {
    * is expected to have already preventDefault'd the originating event.
    */
   const runInjectionFlow = async (input: HTMLElement, draft: string): Promise<void> => {
+    console.log(
+      '[Mesh] intercepting submission on',
+      adapter.hostname,
+      'draft length=',
+      draft.length,
+    );
     pendingQuery = draft;
     isShowingOverlay = true;
 
@@ -244,6 +250,12 @@ function installAgentInjector(adapter: AgentAdapter): void {
     } finally {
       clearTimeout(watchdog);
     }
+
+    console.log('[Mesh] context received:', {
+      should_inject: context?.should_inject,
+      has_block: !!context?.context_block,
+      block_preview: context?.context_block?.slice(0, 120),
+    });
 
     if (!context?.should_inject || !context.context_block) {
       // Nothing useful to inject — let the original submission proceed.

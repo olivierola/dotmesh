@@ -194,7 +194,12 @@ Deno.serve(async (req) => {
             p_user_id: userId,
             p_query_embedding: queryVec,
             p_top_k: 3,
-            p_min_score: 0.55,
+            // Threshold tuned low: instructions are user-authored and
+            // often deliberately broad ("always answer in French"); we'd
+            // rather over-inject one extra than silently skip a relevant
+            // global directive. The matcher still respects ranking, so
+            // genuinely-irrelevant instructions stay out via top_k.
+            p_min_score: 0.35,
           })
         : Promise.resolve({ data: [], error: null }),
     ]);
