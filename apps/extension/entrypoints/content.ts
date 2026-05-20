@@ -7,7 +7,14 @@
  */
 
 import { defineContentScript } from 'wxt/sandbox';
-import { findAdapter, findInput, readDraft, writeDraft, type AgentAdapter } from '@/lib/injector';
+import {
+  findAdapter,
+  findInput,
+  findSubmit,
+  readDraft,
+  writeDraft,
+  type AgentAdapter,
+} from '@/lib/injector';
 import { mountOverlay } from '@/lib/overlay';
 import { isDomainBlocked } from '@/lib/blocked-domains';
 import { installHoverCapture } from '@/lib/hover-capture';
@@ -172,35 +179,45 @@ const TRIVIAL_PATTERNS = [
   /^hi\b/i,
 ];
 
+interface InjectResponse {
+  should_inject: boolean;
+  context_block: string | null;
+  node_ids: string[];
+  instruction_ids?: string[];
+}
+
 function installAgentInjector(adapter: AgentAdapter): void {
   let pendingQuery = '';
   let isShowingOverlay = false;
   let lastInjectedForQuery = '';
+  // Guard for the brief moment between writing the injected draft and the
+  // host page handling our synthetic submit — we don't want to re-fire the
+  // injection on the same submit attempt.
+  let suspendInjection = false;
 
-  // Intercept Enter (without shift) — capture phase to run before host page's handler.
-  const onKeyDown = async (e: KeyboardEvent) => {
-    if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
-    if (isShowingOverlay) return;
-
-    const input = findInput(adapter);
-    if (!input) return;
+  /**
+   * Heart of the interception: read the current draft, ask the background
+   * for context+instructions, show the overlay, and on accept replace the
+   * draft and resubmit. Returns true when interception happened (caller
+   * should swallow the original event), false when nothing needed doing.
+   */
+  const handleSubmissionAttempt = async (input: HTMLElement): Promise<boolean> => {
+    if (suspendInjection || isShowingOverlay) return false;
     const draft = readDraft(adapter, input).trim();
-    if (!draft || draft === lastInjectedForQuery || draft === pendingQuery) return;
-    if (draft.length < 8) return;
-    if (TRIVIAL_PATTERNS.some((re) => re.test(draft))) return;
+    if (!draft) return false;
+    if (draft === lastInjectedForQuery || draft === pendingQuery) return false;
+    if (draft.length < 8) return false;
+    if (TRIVIAL_PATTERNS.some((re) => re.test(draft))) return false;
 
-    // Block submission, then ask background for context.
-    e.preventDefault();
-    e.stopImmediatePropagation();
     pendingQuery = draft;
     isShowingOverlay = true;
 
-    let context: { should_inject: boolean; context_block: string | null; node_ids: string[] } | null = null;
+    let context: InjectResponse | null = null;
     try {
-      context = await new Promise((resolve) => {
+      context = await new Promise<InjectResponse | null>((resolve) => {
         chrome.runtime.sendMessage(
           { type: 'INJECT_REQUEST', query: draft, targetAgent: adapter.hostname },
-          (response) => resolve(response ?? null),
+          (response) => resolve((response as InjectResponse) ?? null),
         );
       });
     } catch (err) {
@@ -208,11 +225,11 @@ function installAgentInjector(adapter: AgentAdapter): void {
     }
 
     if (!context?.should_inject || !context.context_block) {
-      // No relevant context — just let the original submission happen as if nothing intervened.
+      // Nothing useful to inject — let the original submission proceed.
       isShowingOverlay = false;
       pendingQuery = '';
       reSubmit(adapter, input);
-      return;
+      return true;
     }
 
     const previews = context.context_block
@@ -221,7 +238,7 @@ function installAgentInjector(adapter: AgentAdapter): void {
       .slice(0, 3)
       .map((l) => l.replace(/^- /, '').slice(0, 80));
 
-    const newDraft = `${context.context_block}`;
+    const newDraft = context.context_block;
 
     mountOverlay(
       {
@@ -236,7 +253,6 @@ function installAgentInjector(adapter: AgentAdapter): void {
           lastInjectedForQuery = newDraft;
           isShowingOverlay = false;
           pendingQuery = '';
-          // Submit on user's behalf
           reSubmit(adapter, input);
         },
         onSkip: () => {
@@ -245,7 +261,6 @@ function installAgentInjector(adapter: AgentAdapter): void {
           reSubmit(adapter, input);
         },
         onEdit: () => {
-          // Replace draft but don't auto-submit, let user tweak.
           writeDraft(adapter, input, newDraft);
           lastInjectedForQuery = newDraft;
           isShowingOverlay = false;
@@ -254,25 +269,76 @@ function installAgentInjector(adapter: AgentAdapter): void {
         },
       },
     );
+    return true;
+  };
+
+  // ---- Intercept Enter (without shift) on the input itself ----
+  const onKeyDown = async (e: KeyboardEvent) => {
+    if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+    if (isShowingOverlay || suspendInjection) return;
+    const input = findInput(adapter);
+    if (!input) return;
+    // Only intercept if the keydown originated inside our input.
+    if (!input.contains(e.target as Node) && e.target !== input) return;
+    // Pre-emptively block so the host page doesn't submit while we wait.
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    await handleSubmissionAttempt(input);
+  };
+
+  // ---- Intercept clicks on the submit button ----
+  // Many users click "Send" instead of pressing Enter (mobile, mouse, custom
+  // keyboard configs). We intercept those too — capture phase so we run
+  // before React's own click handler.
+  const onClick = async (e: MouseEvent) => {
+    if (isShowingOverlay || suspendInjection) return;
+    const submit = findSubmit(adapter);
+    if (!submit) return;
+    const target = e.target as Node | null;
+    if (!target || !(submit === target || submit.contains(target))) return;
+    const input = findInput(adapter);
+    if (!input) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    await handleSubmissionAttempt(input);
   };
 
   document.addEventListener('keydown', onKeyDown, true);
-}
+  document.addEventListener('click', onClick, true);
 
-function reSubmit(_adapter: AgentAdapter, input: HTMLElement): void {
-  // Send a synthetic Enter to re-trigger the agent's own submit logic.
-  // We use a non-canceled bubble-phase event so our capture handler is bypassed
-  // (it checks isShowingOverlay/pendingQuery).
-  input.focus();
-  const ev = new KeyboardEvent('keydown', {
-    key: 'Enter',
-    code: 'Enter',
-    keyCode: 13,
-    which: 13,
-    bubbles: true,
-    cancelable: true,
-  });
-  input.dispatchEvent(ev);
+  /**
+   * Submit the draft as if the user had done it. We try, in order:
+   *   1. click the submit button if the adapter declares one,
+   *   2. fall back to a synthetic Enter on the input.
+   * Either way we set suspendInjection for a short window so the host's
+   * own submit handler doesn't loop back into us.
+   */
+  function reSubmit(_adapter: AgentAdapter, input: HTMLElement): void {
+    suspendInjection = true;
+    setTimeout(() => {
+      suspendInjection = false;
+    }, 1200);
+
+    const submit = findSubmit(_adapter);
+    if (submit && !(submit as HTMLButtonElement).disabled) {
+      // Click via dispatchEvent so React's onClick handler fires.
+      submit.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, cancelable: true }),
+      );
+      return;
+    }
+    input.focus();
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  }
 }
 
 // --------------- Search signal ----------------
