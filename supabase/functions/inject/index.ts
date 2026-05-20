@@ -223,7 +223,21 @@ Deno.serve(async (req) => {
     const { kept, droppedReasons } = applyContextRules(rules, input.target_agent, relevant);
 
     if (kept.length === 0 && instructions.length === 0) {
-      // No memory worth injecting and no instruction matches — skip.
+      // Diagnostic: when we skip, also try a wider instruction match so the
+      // user can tell if the threshold is the problem vs no instructions
+      // existing vs embedding missing.
+      let diag_top_instruction_score: number | null = null;
+      if (embedding) {
+        const { data: anyMatch } = await client.rpc('match_instructions', {
+          p_user_id: userId,
+          p_query_embedding: queryVec,
+          p_top_k: 1,
+          p_min_score: 0.0,
+        });
+        if (anyMatch && (anyMatch as Array<{ score: number }>).length > 0) {
+          diag_top_instruction_score = (anyMatch as Array<{ score: number }>)[0]!.score;
+        }
+      }
       const reason =
         relevant.length === 0
           ? 'no_relevant_context'
@@ -235,6 +249,14 @@ Deno.serve(async (req) => {
         instruction_ids: [],
         injection_id: null,
         reason,
+        debug: {
+          embedding_ok: !!embedding,
+          total_hits: allHits.length,
+          relevant_hits: relevant.length,
+          top_hit_score: allHits[0]?.score ?? null,
+          top_instruction_score: diag_top_instruction_score,
+          dropped_by_rules: droppedReasons,
+        },
       });
     }
     const filtered = kept;

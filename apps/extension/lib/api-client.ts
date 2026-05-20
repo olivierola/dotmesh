@@ -55,19 +55,29 @@ export async function inject(
   /** IDs of custom instructions that were matched and embedded in the
    *  context_block. Useful for telemetry; the block already contains them. */
   instruction_ids?: string[];
+  reason?: string;
 } | null> {
   try {
     const res = await apiFetch('/inject', {
       method: 'POST',
       body: JSON.stringify({ query, target_agent: targetAgent }),
     });
-    if (!res.ok) return null;
-    return (await res.json()) as {
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      console.warn('[Mesh] inject HTTP error', res.status, detail.slice(0, 200));
+      return null;
+    }
+    const data = (await res.json()) as {
       should_inject: boolean;
       context_block: string | null;
       node_ids: string[];
       instruction_ids?: string[];
+      reason?: string;
+      debug?: Record<string, unknown>;
     };
+    console.log('[Mesh] inject server reason:', data.reason ?? '(none)');
+    if (data.debug) console.log('[Mesh] inject server debug:', data.debug);
+    return data;
   } catch (e) {
     console.warn('[Mesh] inject error', e);
     return null;
