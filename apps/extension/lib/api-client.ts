@@ -45,6 +45,14 @@ export async function pushNode(payload: {
   }
 }
 
+export interface InjectedItem {
+  kind: 'instruction' | 'node';
+  id: string;
+  title: string;
+  node_type?: string;
+  score?: number;
+}
+
 export async function inject(
   query: string,
   targetAgent: string,
@@ -55,6 +63,9 @@ export async function inject(
   /** IDs of custom instructions that were matched and embedded in the
    *  context_block. Useful for telemetry; the block already contains them. */
   instruction_ids?: string[];
+  /** Typed descriptors used by the content script to render coloured
+   *  badges above the chatbot's user-message bubble after submission. */
+  injected_items?: InjectedItem[];
   reason?: string;
 } | null> {
   try {
@@ -72,6 +83,7 @@ export async function inject(
       context_block: string | null;
       node_ids: string[];
       instruction_ids?: string[];
+      injected_items?: InjectedItem[];
       reason?: string;
       debug?: Record<string, unknown>;
     };

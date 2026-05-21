@@ -36,6 +36,18 @@ export interface AgentAdapter {
   submitSelector?: string;
   /** Pretty name for telemetry. */
   label?: string;
+  /**
+   * Comma-separated selector(s) that resolve to the user's own message
+   * bubbles in the conversation. We pick the LAST matching element after
+   * submission to render injected-item badges above its text.
+   * Optional — adapters without this just won't decorate.
+   */
+  userBubbleSelector?: string;
+  /**
+   * Optional CSS selector (relative to the bubble) for the actual text
+   * container. If omitted, the bubble itself is treated as the text node.
+   */
+  userBubbleTextSelector?: string;
 }
 
 export const AGENT_ADAPTERS: AgentAdapter[] = [
@@ -48,6 +60,10 @@ export const AGENT_ADAPTERS: AgentAdapter[] = [
     writeStrategy: 'prosemirror',
     submitSelector:
       'button[data-testid="send-button"], button[aria-label*="Send" i], button[aria-label*="Envoyer" i]',
+    userBubbleSelector: '[data-message-author-role="user"]',
+    // ChatGPT wraps the actual text in a child div; this selector targets it
+    // when present so we can stick badges *above* the text rather than over it.
+    userBubbleTextSelector: '[data-message-author-role="user"] .whitespace-pre-wrap, [data-message-author-role="user"]',
   },
   {
     hostname: 'chat.openai.com',
@@ -66,6 +82,7 @@ export const AGENT_ADAPTERS: AgentAdapter[] = [
     writeStrategy: 'lexical',
     submitSelector:
       'button[aria-label*="Send" i], button[aria-label*="Envoyer" i], button[data-testid="send-button"]',
+    userBubbleSelector: '[data-testid="user-message"], div[data-test-render-count] [data-testid*="message"]',
   },
   // -- Google Gemini --
   {
@@ -76,6 +93,7 @@ export const AGENT_ADAPTERS: AgentAdapter[] = [
     writeStrategy: 'gemini',
     submitSelector:
       'button[aria-label*="Send" i], button[aria-label*="Envoyer" i], mat-icon[data-mat-icon-name="send"]',
+    userBubbleSelector: 'user-query, .user-query-bubble-with-background',
   },
   // -- Perplexity --
   {
@@ -85,6 +103,7 @@ export const AGENT_ADAPTERS: AgentAdapter[] = [
       'textarea[placeholder*="Ask" i], textarea[placeholder*="Demand" i], textarea',
     writeStrategy: 'textarea',
     submitSelector: 'button[aria-label*="Submit" i], button[type="submit"]',
+    userBubbleSelector: 'h1.group\\/query, [class*="user-query"]',
   },
   // -- Mistral (Le Chat) --
   {
@@ -284,6 +303,33 @@ function isVisible(el: HTMLElement): boolean {
   const cs = window.getComputedStyle(el);
   if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
   return true;
+}
+
+/**
+ * Locate the most recently rendered user-message bubble in the chatbot UI.
+ * Returns null if the adapter doesn't declare one, or no bubble is on screen.
+ */
+export function findLastUserBubble(adapter: AgentAdapter): HTMLElement | null {
+  if (!adapter.userBubbleSelector) return null;
+  const selectors = adapter.userBubbleSelector
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const sel of selectors) {
+    let candidates: HTMLElement[] = [];
+    try {
+      candidates = Array.from(document.querySelectorAll<HTMLElement>(sel));
+    } catch {
+      continue;
+    }
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      const el = candidates[i];
+      if (!el) continue;
+      if (!isVisible(el)) continue;
+      return el;
+    }
+  }
+  return null;
 }
 
 /** Find the submit button matching the adapter's submit selectors. */

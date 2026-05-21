@@ -41,6 +41,9 @@ interface SearchHit {
   tags: string[];
   created_at: string;
   score: number;
+  /** hybrid_search returns metadata too — used to pick a node_type for the
+   *  injected badge colour. */
+  metadata?: Record<string, unknown> | null;
 }
 
 function relativeTime(iso: string): string {
@@ -285,12 +288,45 @@ Deno.serve(async (req) => {
       .then(() => {})
       .catch(() => {});
 
+    // Typed item descriptors so the extension can render each injected
+    // element as a coloured badge above the user's prompt bubble. Same
+    // node_type → colour mapping as the Graph page, so a user reading
+    // their graph and reading their chatbot bubble see the same hues.
+    type ItemKind = 'instruction' | 'node';
+    interface InjectedItem {
+      kind: ItemKind;
+      id: string;
+      title: string;
+      node_type?: string;
+      score: number;
+    }
+    const itemsFromInstructions: InjectedItem[] = instructions.map((i) => ({
+      kind: 'instruction',
+      id: i.id,
+      title: i.title,
+      score: i.score,
+    }));
+    const itemsFromNodes: InjectedItem[] = filtered.map((h) => {
+      const extracted = (h.metadata as { extracted?: { node_type?: string; title?: string } } | null)?.extracted;
+      return {
+        kind: 'node',
+        id: h.id,
+        title:
+          extracted?.title ??
+          h.summary ??
+          h.content.slice(0, 80).replace(/\s+/g, ' ').trim(),
+        node_type: extracted?.node_type,
+        score: h.score,
+      };
+    });
+
     return jsonResponse({
       should_inject: true,
       context_block: contextBlock,
       node_ids: filtered.map((h) => h.id),
       instruction_ids: instructions.map((i) => i.id),
       injection_id: log?.id ?? null,
+      injected_items: [...itemsFromInstructions, ...itemsFromNodes],
     });
   } catch (e) {
     if (e instanceof Response) return e;

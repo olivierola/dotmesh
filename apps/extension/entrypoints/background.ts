@@ -231,7 +231,20 @@ function notify(title: string, message: string): void {
 async function handleInjectRequest(
   query: string,
   targetAgent: string,
-): Promise<{ should_inject: boolean; context_block: string | null; node_ids: string[] } | null> {
+): Promise<{
+  should_inject: boolean;
+  context_block: string | null;
+  node_ids: string[];
+  instruction_ids?: string[];
+  injected_items?: Array<{
+    kind: 'instruction' | 'node';
+    id: string;
+    title: string;
+    node_type?: string;
+    score?: number;
+  }>;
+  reason?: string;
+} | null> {
   // Gate 1: auth
   const auth = await getAuth();
   if (!auth) {

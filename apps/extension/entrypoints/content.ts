@@ -15,6 +15,7 @@ import {
   writeDraft,
   type AgentAdapter,
 } from '@/lib/injector';
+import { scheduleBubbleDecoration } from '@/lib/decorate-bubble';
 import { mountOverlay } from '@/lib/overlay';
 import { isDomainBlocked } from '@/lib/blocked-domains';
 import { installHoverCapture } from '@/lib/hover-capture';
@@ -199,11 +200,20 @@ const TRIVIAL_PATTERNS = [
   /^hi\b/i,
 ];
 
+interface InjectedItem {
+  kind: 'instruction' | 'node';
+  id: string;
+  title: string;
+  node_type?: string;
+  score?: number;
+}
+
 interface InjectResponse {
   should_inject: boolean;
   context_block: string | null;
   node_ids: string[];
   instruction_ids?: string[];
+  injected_items?: InjectedItem[];
 }
 
 function installAgentInjector(adapter: AgentAdapter): void {
@@ -306,6 +316,17 @@ function installAgentInjector(adapter: AgentAdapter): void {
           lastInjectedForQuery = newDraft;
           isShowingOverlay = false;
           pendingQuery = '';
+          // Once the chatbot renders the user bubble for this submission,
+          // swap its visual content for [original prompt + coloured badges].
+          // The LLM still receives the full injected text on the wire.
+          if ((context?.injected_items?.length ?? 0) > 0) {
+            scheduleBubbleDecoration({
+              adapter,
+              originalPrompt: draft,
+              items: context!.injected_items!,
+              injectedText: newDraft,
+            });
+          }
           reSubmit(adapter, input);
         },
         onSkip: () => {
