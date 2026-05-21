@@ -299,24 +299,34 @@ Deno.serve(async (req) => {
       title: string;
       node_type?: string;
       score: number;
+      full_text?: string;
+      source_url?: string | null;
     }
     const itemsFromInstructions: InjectedItem[] = instructions.map((i) => ({
       kind: 'instruction',
       id: i.id,
       title: i.title,
       score: i.score,
+      full_text: i.instruction,
     }));
     const itemsFromNodes: InjectedItem[] = filtered.map((h) => {
-      const extracted = (h.metadata as { extracted?: { node_type?: string; title?: string } } | null)?.extracted;
+      const extracted = (h.metadata as {
+        extracted?: { node_type?: string; title?: string; description?: string; content?: string };
+      } | null)?.extracted;
+      const title =
+        extracted?.title ??
+        h.summary ??
+        h.content.slice(0, 80).replace(/\s+/g, ' ').trim();
+      const full =
+        extracted?.description ?? extracted?.content ?? h.summary ?? h.content;
       return {
         kind: 'node',
         id: h.id,
-        title:
-          extracted?.title ??
-          h.summary ??
-          h.content.slice(0, 80).replace(/\s+/g, ' ').trim(),
+        title,
         node_type: extracted?.node_type,
         score: h.score,
+        full_text: typeof full === 'string' ? full.slice(0, 2000) : undefined,
+        source_url: h.source_url,
       };
     });
 

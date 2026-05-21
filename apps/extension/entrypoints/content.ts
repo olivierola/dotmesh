@@ -16,7 +16,7 @@ import {
   type AgentAdapter,
 } from '@/lib/injector';
 import { scheduleBubbleDecoration } from '@/lib/decorate-bubble';
-import { mountOverlay } from '@/lib/overlay';
+import { detectGenericChatbot } from '@/lib/auto-adapter';
 import { isDomainBlocked } from '@/lib/blocked-domains';
 import { installHoverCapture } from '@/lib/hover-capture';
 import { installAttentionTracker } from '@/lib/attention-tracker';
@@ -42,7 +42,7 @@ export default defineContentScript({
     }
 
     const hostname = window.location.hostname;
-    const adapter = findAdapter(hostname);
+    let adapter = findAdapter(hostname);
     console.log('[Mesh] adapter for', hostname, '=', adapter?.label ?? '(none)');
 
     if (adapter) {
@@ -58,9 +58,39 @@ export default defineContentScript({
         console.warn('[Mesh] session signal install failed', err);
       }
     } else {
+      // No explicit adapter for this site. Run passive capture, and ALSO
+      // watch the DOM for an unknown chatbot UI (widget on any site:
+      // Intercom, Crisp, custom React, embedded LLM agents…). When one
+      // appears we install the injector on the fly.
       try { installReadingSignal(); } catch (err) { console.warn('[Mesh] reading signal failed', err); }
       try { installSearchSignal(hostname); } catch (err) { console.warn('[Mesh] search signal failed', err); }
       try { installActiveWorkSignal(hostname); } catch (err) { console.warn('[Mesh] active work signal failed', err); }
+
+      let installedFromAuto = false;
+      const tryAutoInstall = () => {
+        if (installedFromAuto) return;
+        const guess = detectGenericChatbot();
+        if (!guess) return;
+        installedFromAuto = true;
+        adapter = guess;
+        try {
+          installAgentInjector(guess);
+          console.log('[Mesh] generic chatbot detected; injector installed', guess);
+        } catch (err) {
+          console.warn('[Mesh] auto-adapter install failed', err);
+          installedFromAuto = false;
+        }
+      };
+      tryAutoInstall();
+      // Most widgets mount async — watch the DOM for a window so we catch
+      // them as soon as they appear, then stop observing.
+      const obs = new MutationObserver(() => {
+        tryAutoInstall();
+        if (installedFromAuto) obs.disconnect();
+      });
+      obs.observe(document.body, { subtree: true, childList: true });
+      // Hard cap so we don't observe forever on static pages.
+      setTimeout(() => obs.disconnect(), 60_000);
     }
 
     try { installHoverCapture(); } catch (err) { console.warn('[Mesh] hover capture install failed', err); }
@@ -190,7 +220,6 @@ function installAgentSessionSignal(hostname: string): void {
 }
 
 // --------------- Injection (killer feature) ----------------
-const AUTO_ACCEPT_MS = 2000;
 const TRIVIAL_PATTERNS = [
   /^what time/i,
   /^translate/i,
@@ -206,6 +235,8 @@ interface InjectedItem {
   title: string;
   node_type?: string;
   score?: number;
+  full_text?: string;
+  source_url?: string | null;
 }
 
 interface InjectResponse {
@@ -288,61 +319,30 @@ function installAgentInjector(adapter: AgentAdapter): void {
     });
 
     if (!context?.should_inject || !context.context_block) {
-      // Nothing useful to inject — let the original submission proceed.
+      // Nothing relevant to inject — submit the original prompt unchanged.
       isShowingOverlay = false;
       pendingQuery = '';
       reSubmit(adapter, input);
       return;
     }
 
-    const previews = context.context_block
-      .split('\n')
-      .filter((l) => l.startsWith('- '))
-      .slice(0, 3)
-      .map((l) => l.replace(/^- /, '').slice(0, 80));
-
+    // ---- Auto-inject: no overlay, no confirmation ----
+    // The user discovers what was injected via the coloured badges that
+    // appear on their message bubble after submission.
     const newDraft = context.context_block;
-
-    mountOverlay(
-      {
-        nodeCount: context.node_ids.length,
-        previews,
-        agentHostname: adapter.hostname,
-        autoAcceptMs: AUTO_ACCEPT_MS,
-      },
-      {
-        onAccept: () => {
-          writeDraft(adapter, input, newDraft);
-          lastInjectedForQuery = newDraft;
-          isShowingOverlay = false;
-          pendingQuery = '';
-          // Once the chatbot renders the user bubble for this submission,
-          // swap its visual content for [original prompt + coloured badges].
-          // The LLM still receives the full injected text on the wire.
-          if ((context?.injected_items?.length ?? 0) > 0) {
-            scheduleBubbleDecoration({
-              adapter,
-              originalPrompt: draft,
-              items: context!.injected_items!,
-              injectedText: newDraft,
-            });
-          }
-          reSubmit(adapter, input);
-        },
-        onSkip: () => {
-          isShowingOverlay = false;
-          pendingQuery = '';
-          reSubmit(adapter, input);
-        },
-        onEdit: () => {
-          writeDraft(adapter, input, newDraft);
-          lastInjectedForQuery = newDraft;
-          isShowingOverlay = false;
-          pendingQuery = '';
-          input.focus();
-        },
-      },
-    );
+    writeDraft(adapter, input, newDraft);
+    lastInjectedForQuery = newDraft;
+    isShowingOverlay = false;
+    pendingQuery = '';
+    if ((context.injected_items?.length ?? 0) > 0) {
+      scheduleBubbleDecoration({
+        adapter,
+        originalPrompt: draft,
+        items: context.injected_items!,
+        injectedText: newDraft,
+      });
+    }
+    reSubmit(adapter, input);
   };
 
   // ---- Intercept Enter (without shift) on the input itself ----

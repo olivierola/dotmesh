@@ -26,6 +26,11 @@ export interface InjectedItem {
   title: string;
   node_type?: string;
   score?: number;
+  /** Full body shown when the badge is clicked. Instructions: the full
+   *  instruction text. Nodes: the description / summary / content excerpt. */
+  full_text?: string;
+  /** For memory nodes: the original URL the capture came from. */
+  source_url?: string | null;
 }
 
 interface DecorationRequest {
@@ -85,6 +90,13 @@ function ensureStyle(): void {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      cursor: pointer;
+      user-select: none;
+      transition: filter 120ms ease, transform 120ms ease;
+    }
+    .mesh-decorated-badge:hover {
+      filter: brightness(1.2);
+      transform: translateY(-1px);
     }
     .mesh-decorated-badge::before {
       content: '';
@@ -96,8 +108,100 @@ function ensureStyle(): void {
       opacity: 0.85;
       flex: 0 0 auto;
     }
-    .mesh-decorated-instructions { /* row 1 = instructions */ }
-    .mesh-decorated-nodes        { /* row 2 = memory */ }
+
+    /* ---- Popup for badge click ---- */
+    #mesh-badge-popup-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.55);
+      backdrop-filter: blur(4px);
+      z-index: 2147483646;
+      animation: meshFadeIn 120ms ease both;
+    }
+    @keyframes meshFadeIn { from { opacity: 0 } to { opacity: 1 } }
+    #mesh-badge-popup {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: min(520px, 92vw);
+      max-height: 80vh;
+      overflow-y: auto;
+      background: #0a0a0a;
+      color: #e5e5e5;
+      border: 1px solid #2a2a2a;
+      border-radius: 12px;
+      box-shadow: 0 24px 60px rgba(0,0,0,0.6);
+      z-index: 2147483647;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      font-size: 13px;
+      line-height: 1.5;
+      animation: meshPopIn 140ms ease both;
+    }
+    @keyframes meshPopIn {
+      from { opacity: 0; transform: translate(-50%, -48%) scale(0.96); }
+      to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    }
+    #mesh-badge-popup .mesh-pop-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 16px 18px 12px;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    #mesh-badge-popup .mesh-pop-title {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+      font-size: 14px;
+    }
+    #mesh-badge-popup .mesh-pop-kind {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      padding: 2px 7px;
+      border-radius: 999px;
+    }
+    #mesh-badge-popup button.mesh-pop-close {
+      background: transparent;
+      border: 0;
+      color: #737373;
+      font-size: 18px;
+      cursor: pointer;
+      padding: 0 4px;
+      line-height: 1;
+    }
+    #mesh-badge-popup button.mesh-pop-close:hover { color: #d4d4d4; }
+    #mesh-badge-popup .mesh-pop-body {
+      padding: 14px 18px 18px;
+      color: #d4d4d4;
+    }
+    #mesh-badge-popup .mesh-pop-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 12px;
+      font-size: 11px;
+      color: #a3a3a3;
+    }
+    #mesh-badge-popup .mesh-pop-meta span {
+      display: inline-flex;
+      gap: 4px;
+    }
+    #mesh-badge-popup .mesh-pop-content {
+      margin-top: 12px;
+      padding: 10px 12px;
+      background: #141414;
+      border: 1px solid #1f1f1f;
+      border-radius: 8px;
+      white-space: pre-wrap;
+      max-height: 280px;
+      overflow-y: auto;
+      color: #d4d4d4;
+      font-size: 12px;
+    }
   `;
   document.head.appendChild(s);
 }
@@ -123,6 +227,110 @@ function badgeLabel(item: InjectedItem): string {
   return `${icon ?? '•'} ${item.title}`;
 }
 
+function closePopup(): void {
+  document.getElementById('mesh-badge-popup-backdrop')?.remove();
+  document.getElementById('mesh-badge-popup')?.remove();
+}
+
+function openPopup(item: InjectedItem): void {
+  closePopup();
+  const c = colourFor(item);
+
+  const backdrop = document.createElement('div');
+  backdrop.id = 'mesh-badge-popup-backdrop';
+  backdrop.addEventListener('click', closePopup);
+  document.body.appendChild(backdrop);
+
+  const pop = document.createElement('div');
+  pop.id = 'mesh-badge-popup';
+  pop.addEventListener('click', (e) => e.stopPropagation());
+
+  const head = document.createElement('div');
+  head.className = 'mesh-pop-head';
+  const title = document.createElement('div');
+  title.className = 'mesh-pop-title';
+  const kind = document.createElement('span');
+  kind.className = 'mesh-pop-kind';
+  kind.textContent = item.kind === 'instruction' ? 'instruction' : item.node_type ?? 'memory';
+  kind.style.color = c;
+  kind.style.background = c + '22';
+  kind.style.border = `1px solid ${c}55`;
+  const text = document.createElement('span');
+  text.textContent = item.title;
+  title.appendChild(kind);
+  title.appendChild(text);
+  head.appendChild(title);
+
+  const close = document.createElement('button');
+  close.className = 'mesh-pop-close';
+  close.textContent = '✕';
+  close.addEventListener('click', closePopup);
+  head.appendChild(close);
+
+  pop.appendChild(head);
+
+  const body = document.createElement('div');
+  body.className = 'mesh-pop-body';
+
+  if (item.kind === 'instruction') {
+    body.innerHTML = `
+      <p style="margin:0;color:#a3a3a3;">This custom instruction was prepended to your prompt because Mesh judged it relevant to what you asked.</p>
+      <div class="mesh-pop-content"></div>
+      <div class="mesh-pop-meta"></div>
+    `;
+    const content = body.querySelector<HTMLElement>('.mesh-pop-content');
+    if (content) content.textContent = item.full_text ?? '(instruction text not available)';
+    const meta = body.querySelector<HTMLElement>('.mesh-pop-meta');
+    if (meta && typeof item.score === 'number') {
+      const s = document.createElement('span');
+      s.textContent = `Relevance: ${(item.score * 100).toFixed(0)}%`;
+      meta.appendChild(s);
+    }
+  } else {
+    body.innerHTML = `
+      <p style="margin:0;color:#a3a3a3;">A captured memory was used as context for this answer.</p>
+      <div class="mesh-pop-content"></div>
+      <div class="mesh-pop-meta"></div>
+    `;
+    const content = body.querySelector<HTMLElement>('.mesh-pop-content');
+    if (content) content.textContent = item.full_text ?? item.title;
+    const meta = body.querySelector<HTMLElement>('.mesh-pop-meta');
+    if (meta) {
+      if (item.node_type) {
+        const s = document.createElement('span');
+        s.textContent = `Type: ${item.node_type}`;
+        meta.appendChild(s);
+      }
+      if (item.source_url) {
+        const link = document.createElement('a');
+        link.href = item.source_url;
+        link.target = '_blank';
+        link.rel = 'noreferrer noopener';
+        link.style.color = c;
+        link.textContent = 'Open source ↗';
+        meta.appendChild(link);
+      }
+      if (typeof item.score === 'number') {
+        const s = document.createElement('span');
+        s.textContent = `Relevance: ${(item.score * 100).toFixed(0)}%`;
+        meta.appendChild(s);
+      }
+    }
+  }
+  pop.appendChild(body);
+
+  document.body.appendChild(pop);
+
+  // Esc closes too
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      closePopup();
+      document.removeEventListener('keydown', onKey, true);
+    }
+  };
+  document.addEventListener('keydown', onKey, true);
+}
+
 /**
  * Render the decorated UI inside `target`. Replaces existing text content.
  */
@@ -142,17 +350,20 @@ function paintBadges(target: HTMLElement, req: DecorationRequest): void {
   row.className = 'mesh-decorated-badges';
 
   for (const item of req.items) {
-    const b = document.createElement('span');
+    const b = document.createElement('button');
+    b.type = 'button';
     b.className = `mesh-decorated-badge ${item.kind === 'instruction' ? 'mesh-decorated-instructions' : 'mesh-decorated-nodes'}`;
     const c = colourFor(item);
     b.style.color = c;
     b.style.background = c + '22';
     b.style.border = `1px solid ${c}55`;
     b.textContent = badgeLabel(item);
-    b.title =
-      item.kind === 'instruction'
-        ? `Custom instruction: ${item.title}`
-        : `Memory: ${item.title}${item.score ? ` (score ${item.score.toFixed(2)})` : ''}`;
+    b.title = 'Click to see what was injected';
+    b.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openPopup(item);
+    });
     row.appendChild(b);
   }
 

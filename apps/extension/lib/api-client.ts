@@ -51,6 +51,8 @@ export interface InjectedItem {
   title: string;
   node_type?: string;
   score?: number;
+  full_text?: string;
+  source_url?: string | null;
 }
 
 export async function inject(

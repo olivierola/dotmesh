@@ -13,6 +13,7 @@ import { requireUser, createServiceClient } from '../_shared/supabase.ts';
 import { jsonResponse, errorResponse, parseJsonBody } from '../_shared/http.ts';
 import { getUserTier, isWithinQuota } from '../_shared/quotas.ts';
 import { enforceRateLimit } from '../_shared/ratelimit.ts';
+import { cleanupCapture } from '../_shared/cleanup-capture.ts';
 
 const RATE_LIMITS = {
   free: 30,
@@ -82,8 +83,33 @@ async function handleCreate(req: Request): Promise<Response> {
   });
   if (!quota.ok) return errorResponse(`quota_exceeded:${quota.reason}`, 402);
 
-  // Build fingerprint if not provided
-  const fingerprint = input.fingerprint ?? (await sha256Hex(`${input.source}|${input.content}`));
+  // ---- Denoise the captured text before persisting it ----
+  // The extension sends a lot of raw HTML-derived noise (nav menus, cookie
+  // banners, scroll-glue copy). Cleaning here keeps the embedding, NER and
+  // every downstream search relevance pass focused on the actual content.
+  const metaIn = (input.metadata ?? {}) as Record<string, unknown>;
+  const cleanup = await cleanupCapture({
+    rawContent: input.content,
+    source: input.source,
+    sourceUrl: input.source_url ?? null,
+    sourceApp: input.source_app ?? null,
+    pageTitle: (metaIn.pageTitle as string | undefined) ?? null,
+    captureType: (metaIn.captureType as string | undefined) ?? null,
+    elementType: (metaIn.elementType as string | undefined) ?? null,
+  });
+
+  const persistedContent = cleanup.content;
+  const persistedSummary = cleanup.summary;
+  const persistedMetadata = {
+    ...metaIn,
+    raw_content_chars: input.content.length,
+    cleanup_applied: cleanup.llm_applied,
+  };
+
+  // Build fingerprint on the CLEANED content so two near-identical captures
+  // (same article, different scroll-glue around it) deduplicate cleanly.
+  const fingerprint =
+    input.fingerprint ?? (await sha256Hex(`${input.source}|${persistedContent}`));
 
   // Insert (idempotent via unique index user_id + fingerprint)
   const { data: inserted, error } = await client
@@ -94,14 +120,15 @@ async function handleCreate(req: Request): Promise<Response> {
         source: input.source,
         source_url: input.source_url ?? null,
         source_app: input.source_app ?? null,
-        content: input.content,
+        content: persistedContent,
+        summary: persistedSummary,
         tags: input.tags ?? [],
         acl_agents: input.acl_agents ?? ['*'],
         ttl_at: ttlToTimestamp(input.ttl),
         score: input.score ?? null,
         sensitivity: input.sensitivity ?? null,
         fingerprint,
-        metadata: input.metadata ?? {},
+        metadata: persistedMetadata,
       },
       { onConflict: 'user_id,fingerprint', ignoreDuplicates: false },
     )
