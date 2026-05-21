@@ -5,6 +5,7 @@
  */
 
 import { extractFromElement, contentFromExtracted, type NodeType } from './extract';
+import { safeSendMessage } from './runtime';
 
 type ElementType = 'text' | 'heading' | 'link' | 'image' | 'video' | 'code' | 'quote' | 'list-item';
 
@@ -160,31 +161,30 @@ function onCaptureClick(e: MouseEvent): void {
   buttonEl.textContent = '...';
   buttonEl.style.background = '#a3a3a3';
 
-  chrome.runtime.sendMessage(
-    {
-      type: 'CAPTURE_SIGNAL',
-      signal: {
-        content,
-        url: window.location.href,
-        signalType: 'hover',
-        dwellMs: 0,
-        scrollDepth: 0,
-      },
-      metadata: {
-        sourceApp: window.location.hostname,
-        captureType: 'hover',
-        // Legacy fields (kept so older clients/code still see something).
-        elementType: target.type,
-        mediaUrl: extracted.media_url ?? undefined,
-        pageTitle: document.title,
-        capturedAt: new Date().toISOString(),
-        // Where the user came from before landing on this page — used by
-        // process-node to wire `navigated_from` parent edges.
-        referrerUrl: document.referrer || null,
-        // Canonical shape — process-node will fill any null fields with LLM.
-        extracted,
-      },
+  safeSendMessage<{ ok?: boolean; decision?: string; error?: string }>({
+    type: 'CAPTURE_SIGNAL',
+    signal: {
+      content,
+      url: window.location.href,
+      signalType: 'hover',
+      dwellMs: 0,
+      scrollDepth: 0,
     },
+    metadata: {
+      sourceApp: window.location.hostname,
+      captureType: 'hover',
+      // Legacy fields (kept so older clients/code still see something).
+      elementType: target.type,
+      mediaUrl: extracted.media_url ?? undefined,
+      pageTitle: document.title,
+      capturedAt: new Date().toISOString(),
+      // Where the user came from before landing on this page — used by
+      // process-node to wire `navigated_from` parent edges.
+      referrerUrl: document.referrer || null,
+      // Canonical shape — process-node will fill any null fields with LLM.
+      extracted,
+    },
+  }).then(
     (response) => {
       if (!buttonEl) return;
       const ok = response?.ok === true || response?.decision === 'queued';

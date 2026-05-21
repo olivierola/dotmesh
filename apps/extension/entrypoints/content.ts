@@ -17,25 +17,10 @@ import {
 } from '@/lib/injector';
 import { scheduleBubbleDecoration } from '@/lib/decorate-bubble';
 import { detectGenericChatbot } from '@/lib/auto-adapter';
+import { runtimeIsAlive, safeSendMessage } from '@/lib/runtime';
 import { isDomainBlocked } from '@/lib/blocked-domains';
 import { installHoverCapture } from '@/lib/hover-capture';
 import { installAttentionTracker } from '@/lib/attention-tracker';
-
-/**
- * Returns true when the chrome.runtime API is still usable from this content
- * script. After the user reloads the extension, all already-running content
- * scripts are stranded with no working background; any sendMessage throws
- * "Extension context invalidated". We probe once on init and bail out
- * gracefully if so.
- */
-function runtimeIsAlive(): boolean {
-  try {
-    // Touching chrome.runtime.id throws synchronously when the context is gone.
-    return typeof chrome !== 'undefined' && !!chrome.runtime && !!chrome.runtime.id;
-  } catch {
-    return false;
-  }
-}
 
 export default defineContentScript({
   matches: ['<all_urls>'],
@@ -142,7 +127,7 @@ function installReadingSignal(): void {
     const text = (article.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 4000);
     if (text.length < 200) return;
     fired = true;
-    chrome.runtime.sendMessage({
+    safeSendMessage({
       type: 'CAPTURE_SIGNAL',
       signal: {
         content: `[Reading] ${document.title}\n\n${text}`,
@@ -199,7 +184,7 @@ function installAgentSessionSignal(hostname: string): void {
     if (text.length < 100) return;
     lastCaptureAt = now;
     lastMessageCount = messages.length;
-    chrome.runtime.sendMessage({
+    safeSendMessage({
       type: 'CAPTURE_SIGNAL',
       signal: {
         content: `[AI session @ ${hostname}]\n\n${text}`,
@@ -322,57 +307,20 @@ function installAgentInjector(adapter: AgentAdapter): void {
       }
     }, 10_000);
 
-    let context: InjectResponse | null = null;
-    let contextInvalidated = false;
-    try {
-      context = await new Promise<InjectResponse | null>((resolve, reject) => {
-        try {
-          chrome.runtime.sendMessage(
-            { type: 'INJECT_REQUEST', query: draft, targetAgent: adapter.hostname },
-            (response) => {
-              // chrome.runtime.lastError is set when the message couldn't be
-              // delivered (e.g. background worker dead, context invalidated
-              // after a reload). Surface it so we fall back cleanly.
-              const err = chrome.runtime.lastError;
-              if (err) {
-                reject(new Error(err.message ?? 'runtime.sendMessage failed'));
-                return;
-              }
-              resolve((response as InjectResponse) ?? null);
-            },
-          );
-        } catch (e) {
-          // sendMessage can throw SYNCHRONOUSLY when the extension context is
-          // invalidated (e.g. user just reloaded the extension from
-          // chrome://extensions). The page's stale content script is now an
-          // orphan with no working background.
-          reject(e as Error);
-        }
-      });
-    } catch (err) {
-      const msg = (err as Error)?.message ?? String(err);
-      if (msg.includes('context invalidated') || msg.includes('receiving end does not exist')) {
-        contextInvalidated = true;
-        console.warn(
-          '[Mesh] extension context invalidated — this tab\'s content script is stale. ' +
-            'Refresh the page to re-establish the connection.',
-        );
-      } else {
-        console.warn('[Mesh] inject request failed', err);
-      }
-    } finally {
-      clearTimeout(watchdog);
-    }
-
-    // When the extension context is gone we MUST let the original submission
-    // through unchanged. Trying to writeDraft/reSubmit on an orphaned content
-    // script is pointless and would leave the user staring at a frozen
-    // composer.
-    if (contextInvalidated) {
-      isShowingOverlay = false;
-      pendingQuery = '';
-      reSubmit(adapter, input);
-      return;
+    // safeSendMessage swallows every messaging failure (dead background,
+    // invalidated context, runtime.lastError) and resolves to null. The
+    // null branch below treats that as "no context to inject" so the
+    // original prompt still gets through.
+    const context = await safeSendMessage<InjectResponse>({
+      type: 'INJECT_REQUEST',
+      query: draft,
+      targetAgent: adapter.hostname,
+    });
+    clearTimeout(watchdog);
+    if (!context) {
+      console.warn(
+        '[Mesh] inject request returned no context (background dead or runtime invalidated)',
+      );
     }
 
     console.log('[Mesh] context received:', {
@@ -557,7 +505,7 @@ function installSearchSignal(hostname: string): void {
     const dwell = Date.now() - start;
     if (dwell < 30_000) return;
     fired = true;
-    chrome.runtime.sendMessage({
+    safeSendMessage({
       type: 'CAPTURE_SIGNAL',
       signal: {
         content: `[Search] "${query}" on ${hostname}\n${document.title}`,
@@ -602,7 +550,7 @@ function installActiveWorkSignal(hostname: string): void {
       : (focused?.textContent ?? '').slice(0, 600);
 
     if (!focusedText || focusedText.length < 40) return;
-    chrome.runtime.sendMessage({
+    safeSendMessage({
       type: 'CAPTURE_SIGNAL',
       signal: {
         content: `[Active work - ${hostname}]\n${title}\n\n${focusedText}`,

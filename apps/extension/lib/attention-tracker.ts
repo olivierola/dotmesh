@@ -9,6 +9,8 @@
  * 4. If score > threshold and content >120 chars: capture as 'attention' signal.
  */
 
+import { safeSendMessage } from './runtime';
+
 const MIN_TEXT_LEN = 120;
 const VISIBLE_THRESHOLD = 0.6;
 const DWELL_MS = 12_000;
@@ -58,7 +60,7 @@ function captureAttention(el: HTMLElement, dwellMs: number): void {
     el.querySelector('[data-testid="User-Name"], .author, [rel="author"]')?.textContent?.trim() ??
     '';
 
-  chrome.runtime.sendMessage({
+  safeSendMessage({
     type: 'CAPTURE_SIGNAL',
     signal: {
       content: `[Attention] ${heading || document.title}\n${author ? `By: ${author}\n` : ''}\n${text}`,
