@@ -383,7 +383,14 @@ function tryDecorate(req: DecorationRequest): boolean {
   // what we injected. Use the original prompt as the marker because it's
   // shorter and always present in the injected text.
   const text = bubble.textContent ?? '';
-  if (!text.includes(req.originalPrompt.slice(0, 30))) return false;
+  const marker = req.originalPrompt.slice(0, 30);
+  if (!text.includes(marker)) {
+    console.log(
+      '[Mesh] decorate: bubble found but prompt marker missing',
+      { marker, bubbleStart: text.slice(0, 60) },
+    );
+    return false;
+  }
 
   // Find the deepest descendant that holds the actual text. If the adapter
   // provided a finer text selector, prefer it; otherwise we paint over the
@@ -395,6 +402,7 @@ function tryDecorate(req: DecorationRequest): boolean {
     );
     if (inner) target = inner;
   }
+  console.log('[Mesh] decorate: painting badges on', target);
   paintBadges(target, req);
   return true;
 }
@@ -408,6 +416,13 @@ export function scheduleBubbleDecoration(
   timeoutMs = 12_000,
 ): () => void {
   ensureStyle();
+  console.log(
+    '[Mesh] decorate: scheduling for',
+    req.adapter.label ?? req.adapter.hostname,
+    'with',
+    req.items.length,
+    'item(s)',
+  );
 
   // Best-effort immediate attempt — sometimes the bubble is already there
   // (synchronous chatbots, instant echo).
@@ -430,7 +445,13 @@ export function scheduleBubbleDecoration(
 
   const timer = setTimeout(() => {
     // Last attempt before giving up.
-    tryDecorate(req);
+    const ok = tryDecorate(req);
+    if (!ok) {
+      console.warn(
+        '[Mesh] decorate: timed out — no bubble matched the injected text',
+        { hostname: req.adapter.hostname, items: req.items.length },
+      );
+    }
     finish();
   }, timeoutMs);
 
