@@ -95,18 +95,18 @@ export default function DashboardPage() {
         </div>
         <div style={{ height: 240 }}>
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={data.daily} margin={{ top: 8, right: 8, bottom: 0, left: -16 }}>
+            <AreaChart data={data.daily} margin={{ top: 8, right: 24, bottom: 0, left: -16 }}>
               <defs>
                 <linearGradient id="g-captures" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor={ACCENT} stopOpacity={0.45} />
                   <stop offset="95%" stopColor={ACCENT} stopOpacity={0} />
                 </linearGradient>
                 <linearGradient id="g-injections" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#60a5fa" stopOpacity={0.3} />
+                  <stop offset="5%" stopColor="#60a5fa" stopOpacity={0.45} />
                   <stop offset="95%" stopColor="#60a5fa" stopOpacity={0} />
                 </linearGradient>
                 <linearGradient id="g-pulls" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#a78bfa" stopOpacity={0.2} />
+                  <stop offset="5%" stopColor="#a78bfa" stopOpacity={0.35} />
                   <stop offset="95%" stopColor="#a78bfa" stopOpacity={0} />
                 </linearGradient>
               </defs>
@@ -118,7 +118,19 @@ export default function DashboardPage() {
                 tickFormatter={(d: string) => d.slice(5)}
                 interval={4}
               />
-              <YAxis stroke="#525252" fontSize={10} width={32} />
+              {/* Left axis: captures — typically orders of magnitude larger
+                  than injections/pulls (a backfill can push it to 500+ in a
+                  single day). Right axis: injections + pulls on their own
+                  scale so a handful of events per day actually shows up. */}
+              <YAxis yAxisId="captures" stroke="#525252" fontSize={10} width={32} />
+              <YAxis
+                yAxisId="events"
+                orientation="right"
+                stroke="#525252"
+                fontSize={10}
+                width={28}
+                allowDecimals={false}
+              />
               <Tooltip
                 contentStyle={{
                   background: '#0a0a0a',
@@ -129,6 +141,7 @@ export default function DashboardPage() {
                 labelStyle={{ color: '#a3a3a3' }}
               />
               <Area
+                yAxisId="captures"
                 type="monotone"
                 dataKey="captures"
                 stroke={ACCENT}
@@ -136,18 +149,23 @@ export default function DashboardPage() {
                 fill="url(#g-captures)"
               />
               <Area
+                yAxisId="events"
                 type="monotone"
                 dataKey="injections"
                 stroke="#60a5fa"
-                strokeWidth={1.5}
+                strokeWidth={2}
                 fill="url(#g-injections)"
+                dot={{ r: 2, fill: '#60a5fa', stroke: '#60a5fa' }}
+                activeDot={{ r: 4 }}
               />
               <Area
+                yAxisId="events"
                 type="monotone"
                 dataKey="pulls"
                 stroke="#a78bfa"
                 strokeWidth={1.5}
                 fill="url(#g-pulls)"
+                dot={{ r: 2, fill: '#a78bfa', stroke: '#a78bfa' }}
               />
             </AreaChart>
           </ResponsiveContainer>
