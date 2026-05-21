@@ -330,6 +330,12 @@ function installAgentInjector(adapter: AgentAdapter): void {
     // The user discovers what was injected via the coloured badges that
     // appear on their message bubble after submission.
     const newDraft = context.context_block;
+    console.log(
+      '[Mesh] auto-injecting context block, length=',
+      newDraft.length,
+      'items=',
+      context.injected_items?.length ?? 0,
+    );
     writeDraft(adapter, input, newDraft);
     lastInjectedForQuery = newDraft;
     isShowingOverlay = false;
@@ -342,6 +348,11 @@ function installAgentInjector(adapter: AgentAdapter): void {
         injectedText: newDraft,
       });
     }
+    // Give React (ProseMirror / Lexical) one tick to see the new draft and
+    // re-enable the submit button before we trigger it. Without this,
+    // findSubmit() finds the button still disabled from the empty-state and
+    // reSubmit falls back to a synthetic Enter that the editor often eats.
+    await new Promise((r) => setTimeout(r, 60));
     reSubmit(adapter, input);
   };
 
