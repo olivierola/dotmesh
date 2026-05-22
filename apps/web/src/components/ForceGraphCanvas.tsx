@@ -150,12 +150,10 @@ export default function ForceGraphCanvas({
     }
 
     const hubs = nodes.filter((n) => n.isHub);
-    if (hubs.length === 0) return;
     const ringRadius = Math.max(220, hubs.length * 80);
     hubs.forEach((hub, i) => {
-      // Only seed if the simulation hasn't already placed this node.
       if (typeof hub.x === 'number' && typeof hub.y === 'number') return;
-      const angle = (i / hubs.length) * Math.PI * 2;
+      const angle = (i / Math.max(hubs.length, 1)) * Math.PI * 2;
       hub.x = Math.cos(angle) * ringRadius;
       hub.y = Math.sin(angle) * ringRadius;
     });
@@ -174,6 +172,20 @@ export default function ForceGraphCanvas({
           m.y = (hub.y ?? 0) + Math.sin(a) * r;
         });
       }
+    }
+    // Any leftover node without coordinates (orphans, auto-created
+    // page nodes, anything not in a hub) — place them on an outer
+    // golden-spiral so their nodePointerAreaPaint hit-zone has a
+    // real position from frame 1. Without this, react-force-graph
+    // paints the pickability disc at (0,0) and the node is forever
+    // unclickable even after the physics simulation moves it.
+    let stray = 0;
+    for (const n of nodes) {
+      if (typeof n.x === 'number' && typeof n.y === 'number') continue;
+      const a = (stray++ * 137.5 * Math.PI) / 180;
+      const r = ringRadius * 1.4;
+      n.x = Math.cos(a) * r;
+      n.y = Math.sin(a) * r;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodes, membersByHub]);
