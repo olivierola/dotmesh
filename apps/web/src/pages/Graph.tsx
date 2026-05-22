@@ -571,6 +571,232 @@ interface NodeLink {
   node: MockNode;
 }
 
+/* ---------------------------------------------------------- */
+/*  Side panel — clean document-style + clickable meta badges  */
+/* ---------------------------------------------------------- */
+
+type MetaBadge = {
+  key: string;
+  label: string;
+  icon: string;
+  color: string;
+  detail: () => JSX.Element;
+};
+
+function buildMetaBadges(
+  node: MockNode,
+  collections: GraphCollection[],
+  links: NodeLink[],
+): MetaBadge[] {
+  const ex = node.metadata?.extracted;
+  const out: MetaBadge[] = [];
+
+  if (ex?.author) {
+    out.push({
+      key: 'author',
+      label: ex.author,
+      icon: '✍️',
+      color: '#a78bfa',
+      detail: () => (
+        <p className="text-sm text-neutral-300">
+          Author detected from page metadata: <strong>{ex.author}</strong>
+        </p>
+      ),
+    });
+  }
+  if (ex?.published_at) {
+    out.push({
+      key: 'published',
+      label: ex.published_at.slice(0, 10),
+      icon: '📅',
+      color: '#34d399',
+      detail: () => (
+        <p className="text-sm text-neutral-300">Published on {ex.published_at}</p>
+      ),
+    });
+  }
+  if (ex?.lang) {
+    out.push({
+      key: 'lang',
+      label: ex.lang,
+      icon: '🌐',
+      color: '#22d3ee',
+      detail: () => (
+        <p className="text-sm text-neutral-300">
+          Language tag from the source page: {ex.lang}
+        </p>
+      ),
+    });
+  }
+  if (ex?.reading_time_minutes != null) {
+    out.push({
+      key: 'reading',
+      label: `~${ex.reading_time_minutes} min`,
+      icon: '⏱',
+      color: '#facc15',
+      detail: () => (
+        <p className="text-sm text-neutral-300">
+          Reading time: ~{ex.reading_time_minutes} minutes
+          {ex.word_count ? ` (${ex.word_count.toLocaleString()} words)` : ''}
+        </p>
+      ),
+    });
+  }
+  if (ex?.site_name ?? node.source_app) {
+    const site = ex?.site_name ?? node.source_app!;
+    out.push({
+      key: 'site',
+      label: site,
+      icon: '🏷',
+      color: '#60a5fa',
+      detail: () => (
+        <p className="text-sm text-neutral-300">
+          Captured from <strong>{site}</strong>
+          {node.source_url ? (
+            <>
+              {' '}
+              —{' '}
+              <a
+                href={node.source_url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-accent hover:underline"
+              >
+                open URL ↗
+              </a>
+            </>
+          ) : null}
+        </p>
+      ),
+    });
+  }
+  if (ex?.keywords && ex.keywords.length > 0) {
+    out.push({
+      key: 'keywords',
+      label: `${ex.keywords.length} keywords`,
+      icon: '🔖',
+      color: '#f472b6',
+      detail: () => (
+        <div className="flex flex-wrap gap-1.5">
+          {(ex.keywords ?? []).map((k) => (
+            <span
+              key={k}
+              className="rounded-full border border-neutral-800 bg-neutral-900 px-2 py-0.5 text-xs text-neutral-300"
+            >
+              {k}
+            </span>
+          ))}
+        </div>
+      ),
+    });
+  }
+  if (node.entities?.length) {
+    out.push({
+      key: 'entities',
+      label: `${node.entities.length} entities`,
+      icon: '🧩',
+      color: '#84cc16',
+      detail: () => (
+        <ul className="space-y-1 text-xs text-neutral-300">
+          {node.entities.map((e, i) => (
+            <li key={i} className="flex justify-between border-b border-neutral-900 py-1">
+              <span>{e.value}</span>
+              <span className="text-neutral-500">{e.type}</span>
+            </li>
+          ))}
+        </ul>
+      ),
+    });
+  }
+  if (collections.length > 0) {
+    out.push({
+      key: 'collections',
+      label: `${collections.length} collection${collections.length > 1 ? 's' : ''}`,
+      icon: '📚',
+      color: '#fb923c',
+      detail: () => (
+        <ul className="space-y-1.5">
+          {collections.map((c) => (
+            <li key={c.id} className="flex items-center gap-2 text-sm text-neutral-300">
+              <span
+                className="inline-block h-2 w-2 rounded-full"
+                style={{ background: colorForCollection(c) }}
+              />
+              {c.icon ? `${c.icon} ` : ''}
+              {c.name}
+            </li>
+          ))}
+        </ul>
+      ),
+    });
+  }
+  if (links.length > 0) {
+    const parents = links.filter((l) => l.direction === 'parent').length;
+    const children = links.filter((l) => l.direction === 'child').length;
+    const related = links.length - parents - children;
+    out.push({
+      key: 'links',
+      label: `${links.length} connection${links.length > 1 ? 's' : ''}`,
+      icon: '🔗',
+      color: '#22d3ee',
+      detail: () => (
+        <div>
+          <p className="mb-2 text-xs text-neutral-500">
+            {parents} parent{parents !== 1 ? 's' : ''} · {children} child
+            {children !== 1 ? 'ren' : ''} · {related} related
+          </p>
+          <ul className="space-y-1.5">
+            {links.map((l) => (
+              <li key={l.edgeId} className="flex items-center gap-2 text-xs">
+                <span
+                  className="inline-block h-2 w-2 rounded-full"
+                  style={{ background: RELATION_COLOR[l.relation] ?? '#52525b' }}
+                />
+                <span className="uppercase tracking-wider text-neutral-500">
+                  {l.direction}
+                </span>
+                <span className="text-neutral-300">
+                  {l.relation.replace(/_/g, ' ')} —{' '}
+                  {l.node.metadata?.extracted?.title ??
+                    l.node.summary ??
+                    l.node.content.slice(0, 60)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ),
+    });
+  }
+  out.push({
+    key: 'captured',
+    label: formatDistanceToNow(
+      new Date(
+        ex?.source_extracted_at ??
+          (node.metadata?.capturedAt as string | undefined) ??
+          node.created_at,
+      ),
+      { addSuffix: true },
+    ),
+    icon: '🕐',
+    color: '#737373',
+    detail: () => (
+      <p className="text-sm text-neutral-300">
+        Captured on{' '}
+        {format(
+          new Date(
+            ex?.source_extracted_at ??
+              (node.metadata?.capturedAt as string | undefined) ??
+              node.created_at,
+          ),
+          'MMM d, yyyy · HH:mm:ss',
+        )}
+      </p>
+    ),
+  });
+  return out;
+}
+
 function SidePanel({
   node,
   collections,
@@ -586,421 +812,235 @@ function SidePanel({
   onNavigate: (id: string) => void;
   onFocusLineage: (id: string) => void;
 }) {
-  const extracted = node.metadata?.extracted;
+  const ex = node.metadata?.extracted;
   const nodeType = effectiveNodeType(node);
-  const elType = node.metadata?.elementType ?? nodeType;
-  const mediaUrl = extracted?.media_url ?? (node.metadata?.mediaUrl as string | undefined);
-  const thumb = extracted?.media_thumbnail ?? null;
-  const captureType = node.metadata?.captureType;
-  const capturedAt =
-    extracted?.source_extracted_at ??
-    (node.metadata?.capturedAt as string | undefined) ??
-    node.created_at;
-  const dateObj = new Date(capturedAt);
-  const surroundingContext = node.metadata?.surroundingContext as string | undefined;
-  const heading = node.metadata?.heading as string | undefined;
-  const author = extracted?.author ?? (node.metadata?.author as string | undefined);
-  const pageTitle =
-    extracted?.title ?? (node.metadata?.pageTitle as string | undefined);
-  const reason = node.metadata?.reason as string | undefined;
-  const description = extracted?.description ?? null;
-  const siteName = extracted?.site_name ?? node.source_app ?? null;
-  const lang = extracted?.lang ?? null;
-  const publishedAt = extracted?.published_at ?? null;
-  const extractedKeywords = extracted?.keywords ?? [];
-  const extractedActions = extracted?.actions ?? [];
-  const extractionMethod = extracted?.extraction_method ?? null;
+  const typeColor = TYPE_COLORS[nodeType] ?? ORPHAN_COLOR;
+  const title =
+    ex?.title ??
+    (node.metadata?.pageTitle as string | undefined) ??
+    node.summary?.split(/[.\n]/)[0] ??
+    'Untitled';
+  const description = ex?.description ?? null;
+  const body = ex?.content ?? node.content;
+  const mediaUrl = ex?.media_url ?? (node.metadata?.mediaUrl as string | undefined);
+  const thumb = ex?.media_thumbnail ?? null;
 
-  // Strip the leading [tag] from the content (e.g., "[Image] https://...") for display
-  const cleanContent = (node.content ?? '').replace(/^\[[^\]]+\]\s*/, '');
+  const badges = buildMetaBadges(node, collections, links);
+  const [openBadge, setOpenBadge] = useState<MetaBadge | null>(null);
 
   return (
-    <aside className="absolute right-0 top-0 z-10 flex h-full w-full max-w-[90vw] flex-col border-l border-neutral-800 bg-neutral-950/95 backdrop-blur sm:w-[420px]">
-      <div className="flex items-center justify-between border-b border-neutral-800 p-4">
-        <div className="flex flex-wrap items-center gap-1.5 text-xs">
-          <span
-            className="rounded px-2 py-0.5 font-medium"
-            style={{
-              background: (TYPE_COLORS[nodeType] ?? ORPHAN_COLOR) + '22',
-              color: TYPE_COLORS[nodeType] ?? '#a3a3a3',
-            }}
-          >
-            {TYPE_LABELS[nodeType] ?? nodeType}
-          </span>
-          {captureType && (
-            <span className="rounded bg-amber-500/10 px-2 py-0.5 text-amber-300">
-              {captureType}
-            </span>
-          )}
-          {elType && elType !== nodeType && (
-            <span className="rounded border border-neutral-800 px-2 py-0.5 text-neutral-400">
-              {elType}
-            </span>
-          )}
-          {extractionMethod && (
-            <span
-              className="rounded border border-neutral-800 px-2 py-0.5 text-neutral-500"
-              title="How metadata was obtained"
-            >
-              {extractionMethod}
-            </span>
-          )}
-          {reason && (
-            <span className="rounded border border-neutral-800 px-2 py-0.5 text-neutral-500">
-              {reason}
-            </span>
-          )}
-          <span className="text-neutral-500">{node.source}</span>
-        </div>
+    <aside className="absolute right-0 top-0 z-10 flex h-full w-full max-w-[90vw] flex-col border-l border-neutral-800 bg-neutral-950/95 backdrop-blur sm:w-[460px]">
+      <div className="flex items-center justify-between border-b border-neutral-900 px-5 py-3 text-xs text-neutral-500">
         <button
-          onClick={onClose}
-          className="rounded p-1 text-neutral-500 hover:bg-neutral-900 hover:text-neutral-300"
+          onClick={() => onFocusLineage(node.id)}
+          className="hover:text-neutral-200"
+          title="Focus on this node's ancestors and descendants"
         >
+          ↟ Focus lineage
+        </button>
+        <button onClick={onClose} className="hover:text-neutral-200">
           ✕
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 text-sm">
-        {/* Title from extracted */}
-        {pageTitle && (
-          <h2 className="mb-2 text-base font-semibold leading-snug text-neutral-100">
-            {pageTitle}
-          </h2>
-        )}
-        {description && (
-          <p className="mb-4 text-sm text-neutral-300">{description}</p>
+      <article className="flex-1 overflow-y-auto px-6 py-6">
+        <div
+          className="mb-3 inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-widest"
+          style={{
+            background: typeColor + '22',
+            color: typeColor,
+            border: `1px solid ${typeColor}44`,
+          }}
+        >
+          {TYPE_LABELS[nodeType] ?? nodeType}
+        </div>
+
+        <h1 className="mb-3 text-xl font-semibold leading-tight text-neutral-100">
+          {title}
+        </h1>
+
+        {(ex?.author || ex?.site_name) && (
+          <p className="mb-5 text-sm text-neutral-500">
+            {ex?.author && <span>by {ex.author}</span>}
+            {ex?.author && (ex?.site_name || node.source_app) && <span> · </span>}
+            {(ex?.site_name || node.source_app) && (
+              <span>{ex?.site_name ?? node.source_app}</span>
+            )}
+          </p>
         )}
 
-        {/* Media preview */}
-        {(nodeType === 'image' || elType === 'image') && (mediaUrl || thumb) && (
-          <div className="mb-4 overflow-hidden rounded-md border border-neutral-800 bg-neutral-900">
+        {(nodeType === 'image' || nodeType === 'page') && (mediaUrl || thumb) && (
+          <div className="mb-5 overflow-hidden rounded-lg border border-neutral-800">
             <img
               src={mediaUrl ?? thumb ?? ''}
-              alt={pageTitle ?? node.summary ?? ''}
-              className="block h-auto max-h-80 w-full object-contain"
+              alt={title}
+              className="block h-auto max-h-80 w-full object-cover"
               onError={(e) => {
                 (e.currentTarget as HTMLImageElement).style.display = 'none';
               }}
             />
           </div>
         )}
-        {(nodeType === 'video' || elType === 'video') && mediaUrl && (
-          <div className="mb-4 overflow-hidden rounded-md border border-neutral-800 bg-neutral-900">
-            <video
-              src={mediaUrl}
-              poster={thumb ?? undefined}
-              controls
-              className="block h-auto max-h-80 w-full"
-              preload="metadata"
-            />
-          </div>
-        )}
-        {nodeType === 'code' && (
-          <pre className="mb-4 max-h-72 overflow-auto rounded-md border border-neutral-800 bg-neutral-900 p-3 text-[11px] leading-relaxed text-neutral-300">
-            <code>{extracted?.content ?? cleanContent}</code>
-          </pre>
+        {nodeType === 'video' && mediaUrl && (
+          <video
+            src={mediaUrl}
+            poster={thumb ?? undefined}
+            controls
+            preload="metadata"
+            className="mb-5 block h-auto max-h-80 w-full rounded-lg border border-neutral-800"
+          />
         )}
 
-        {/* Summary */}
-        {node.summary && node.summary !== description && (
-          <div className="mb-4">
-            <div className="mb-1 text-[10px] uppercase tracking-widest text-neutral-500">
-              Summary
-            </div>
-            <p className="whitespace-pre-wrap text-neutral-200">{node.summary}</p>
-          </div>
+        {description && (
+          <p className="mb-5 text-base leading-relaxed text-neutral-300">{description}</p>
         )}
 
-        {/* Full content (collapsed for long ones) */}
-        {elType !== 'code' && cleanContent && (
-          <FullContent text={cleanContent} />
+        {body && body !== description && (
+          <BodyContent text={body} isCode={nodeType === 'code'} />
         )}
 
-        {/* Heading / author from metadata */}
-        {(heading || author) && (
-          <div className="mb-4 rounded-md border border-neutral-800 bg-neutral-900/40 p-3 text-xs">
-            {heading && <div className="text-neutral-300">{heading}</div>}
-            {author && <div className="mt-1 text-neutral-500">By {author}</div>}
-          </div>
+        {node.source_url && (
+          <p className="mt-6 border-t border-neutral-900 pt-4 text-xs">
+            <a
+              href={node.source_url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-neutral-500 hover:text-accent"
+            >
+              ↗{' '}
+              {(() => {
+                try {
+                  const u = new URL(node.source_url!);
+                  return u.hostname + u.pathname.slice(0, 40);
+                } catch {
+                  return node.source_url;
+                }
+              })()}
+            </a>
+          </p>
         )}
 
-        {/* Surrounding context (for images/videos) */}
-        {surroundingContext && (
-          <div className="mb-4">
-            <div className="mb-1 text-[10px] uppercase tracking-widest text-neutral-500">
-              Context around
-            </div>
-            <p className="rounded-md border border-neutral-800 bg-neutral-900/30 p-2 text-xs text-neutral-400">
-              {surroundingContext}
-            </p>
-          </div>
-        )}
-
-        {/* Metadata: date + url + extracted fields */}
-        <div className="mb-4 space-y-1.5 rounded-md border border-neutral-800 bg-neutral-900/30 p-3 text-xs">
-          <div className="flex justify-between gap-3">
-            <span className="text-neutral-500">Captured</span>
-            <span className="text-right text-neutral-300">
-              {format(dateObj, 'MMM d, yyyy · HH:mm:ss')}
-              <span className="ml-1 text-neutral-500">
-                ({formatDistanceToNow(dateObj, { addSuffix: true })})
-              </span>
-            </span>
-          </div>
-          {author && (
-            <div className="flex justify-between gap-3">
-              <span className="text-neutral-500">Author</span>
-              <span className="text-right text-neutral-200">{author}</span>
-            </div>
-          )}
-          {publishedAt && (
-            <div className="flex justify-between gap-3">
-              <span className="text-neutral-500">Published</span>
-              <span className="text-right text-neutral-300">{publishedAt}</span>
-            </div>
-          )}
-          {lang && (
-            <div className="flex justify-between gap-3">
-              <span className="text-neutral-500">Language</span>
-              <span className="text-right text-neutral-300">{lang}</span>
-            </div>
-          )}
-          {extracted?.reading_time_minutes != null && (
-            <div className="flex justify-between gap-3">
-              <span className="text-neutral-500">Reading time</span>
-              <span className="text-right text-neutral-300">
-                ~{extracted.reading_time_minutes} min
-                {extracted.word_count
-                  ? ` · ${extracted.word_count.toLocaleString()} words`
-                  : ''}
-              </span>
-            </div>
-          )}
-          {extracted?.canonical_url &&
-            extracted.canonical_url !== node.source_url && (
-              <div className="flex justify-between gap-3">
-                <span className="text-neutral-500">Canonical</span>
-                <a
-                  href={extracted.canonical_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="truncate text-right text-accent hover:underline"
-                  title={extracted.canonical_url}
-                >
-                  {(() => {
-                    try {
-                      const u = new URL(extracted.canonical_url!);
-                      return u.hostname + u.pathname.slice(0, 30);
-                    } catch {
-                      return extracted.canonical_url;
-                    }
-                  })()}
-                </a>
-              </div>
-            )}
-          {siteName && (
-            <div className="flex justify-between gap-3">
-              <span className="text-neutral-500">Source app</span>
-              <span className="text-neutral-300">{siteName}</span>
-            </div>
-          )}
-          {node.source_url && (
-            <div className="flex justify-between gap-3">
-              <span className="text-neutral-500">URL</span>
-              <a
-                href={node.source_url}
-                target="_blank"
-                rel="noreferrer"
-                className="truncate text-right text-accent hover:underline"
-                title={node.source_url}
-              >
-                {(() => {
-                  try {
-                    const u = new URL(node.source_url!);
-                    return u.hostname + u.pathname.slice(0, 30);
-                  } catch {
-                    return node.source_url;
-                  }
-                })()}
-              </a>
-            </div>
-          )}
-          {typeof node.score === 'number' && (
-            <div className="flex justify-between gap-3">
-              <span className="text-neutral-500">Score</span>
-              <span className="text-neutral-300">{node.score.toFixed(2)}</span>
-            </div>
-          )}
-        </div>
-
-        {/* Collections */}
-        {collections.length > 0 && (
-          <div className="mb-4">
-            <div className="mb-1.5 text-[10px] uppercase tracking-widest text-neutral-500">
-              Collections
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {collections.map((c) => (
-                <span
-                  key={c.id}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-300"
-                >
-                  <span
-                    className="inline-block h-1.5 w-1.5 rounded-full"
-                    style={{ background: colorForCollection(c) }}
-                  />
-                  {c.icon ? `${c.icon} ` : ''}
-                  {c.name}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Entities */}
-        {node.entities.length > 0 && (
-          <div className="mb-4">
-            <div className="mb-1.5 text-[10px] uppercase tracking-widest text-neutral-500">
-              Entities ({node.entities.length})
-            </div>
-            <div className="flex flex-wrap gap-1">
-              {node.entities.map((e, i) => (
-                <span
-                  key={i}
-                  className="rounded-full bg-neutral-900 px-2 py-0.5 text-[11px] text-neutral-300"
-                  title={e.type}
-                >
-                  {e.value}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Keywords from extracted */}
-        {extractedKeywords.length > 0 && (
-          <div className="mb-4">
-            <div className="mb-1.5 text-[10px] uppercase tracking-widest text-neutral-500">
-              Keywords
-            </div>
-            <div className="flex flex-wrap gap-1">
-              {extractedKeywords.map((k, i) => (
-                <span
-                  key={`${k}-${i}`}
-                  className="rounded-full border border-neutral-800 bg-neutral-900/60 px-2 py-0.5 text-[11px] text-neutral-300"
-                >
-                  {k}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* User / system actions on this node */}
-        {extractedActions.length > 0 && (
-          <div className="mb-4">
-            <div className="mb-1.5 text-[10px] uppercase tracking-widest text-neutral-500">
-              Actions
-            </div>
-            <ul className="space-y-1 text-[11px] text-neutral-400">
-              {extractedActions.slice(0, 6).map((a, i) => (
-                <li key={i} className="flex justify-between gap-3">
-                  <span className="text-neutral-300">{a.kind}</span>
-                  <span className="text-neutral-500">
-                    {a.value ? `${a.value} · ` : ''}
-                    {a.at ? formatDistanceToNow(new Date(a.at), { addSuffix: true }) : ''}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        {/* Connections */}
-        {links.length > 0 && (
-          <div className="mb-4">
-            <div className="mb-2 flex items-center justify-between">
-              <div className="text-[10px] uppercase tracking-widest text-neutral-500">
-                Connections ({links.length})
-              </div>
+        {badges.length > 0 && (
+          <div className="mt-6 flex flex-wrap gap-1.5 border-t border-neutral-900 pt-5">
+            {badges.map((b) => (
               <button
-                onClick={() => onFocusLineage(node.id)}
-                className="text-[11px] text-accent hover:underline"
-                title="Show only this node's ancestors and descendants"
+                key={b.key}
+                onClick={() => setOpenBadge(b)}
+                className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition hover:brightness-125"
+                style={{
+                  background: b.color + '14',
+                  color: b.color,
+                  borderColor: b.color + '40',
+                }}
               >
-                Focus lineage
+                <span>{b.icon}</span>
+                <span className="font-medium">{b.label}</span>
               </button>
+            ))}
+          </div>
+        )}
+
+        {node.tags.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {node.tags.map((t, i) => (
+              <span
+                key={i}
+                className="rounded-full border border-neutral-800 px-2 py-0.5 text-[10px] text-neutral-500"
+              >
+                #{t}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {links.length > 0 && (
+          <div className="mt-6 border-t border-neutral-900 pt-5">
+            <div className="mb-2 text-[10px] uppercase tracking-widest text-neutral-500">
+              Connections
             </div>
             <ul className="space-y-1.5">
-              {links.map((l) => (
+              {links.slice(0, 8).map((l) => (
                 <li key={l.edgeId}>
                   <button
                     onClick={() => onNavigate(l.node.id)}
-                    className="group flex w-full items-start gap-2 rounded-md border border-neutral-800 bg-neutral-900/40 p-2 text-left hover:border-neutral-700 hover:bg-neutral-900"
+                    className="group flex w-full items-center gap-2 rounded px-1 py-1 text-left text-xs hover:bg-neutral-900/60"
                   >
                     <span
-                      className="mt-1 inline-block h-2 w-2 flex-none rounded-full"
+                      className="inline-block h-1.5 w-1.5 flex-none rounded-full"
                       style={{ background: RELATION_COLOR[l.relation] ?? '#52525b' }}
                     />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-neutral-500">
-                        <span>{l.direction}</span>
-                        <span className="text-neutral-700">·</span>
-                        <span style={{ color: RELATION_COLOR[l.relation] ?? '#9ca3af' }}>
-                          {l.relation.replace(/_/g, ' ')}
-                        </span>
-                      </div>
-                      <div className="truncate text-xs text-neutral-200 group-hover:text-neutral-100">
-                        {l.node.metadata?.extracted?.title ??
-                          l.node.summary ??
-                          l.node.content.slice(0, 80)}
-                      </div>
-                    </div>
+                    <span className="w-12 flex-none text-[9px] uppercase tracking-wider text-neutral-600">
+                      {l.direction}
+                    </span>
+                    <span className="truncate text-neutral-300 group-hover:text-neutral-100">
+                      {l.node.metadata?.extracted?.title ??
+                        l.node.summary ??
+                        l.node.content.slice(0, 60)}
+                    </span>
                   </button>
                 </li>
               ))}
             </ul>
           </div>
         )}
+      </article>
 
-        {/* Tags */}
-        {node.tags.length > 0 && (
-          <div className="mb-4">
-            <div className="mb-1.5 text-[10px] uppercase tracking-widest text-neutral-500">Tags</div>
-            <div className="flex flex-wrap gap-1">
-              {node.tags.map((t, i) => (
-                <span
-                  key={i}
-                  className="rounded-full border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-400"
-                >
-                  #{t}
-                </span>
-              ))}
+      {openBadge && (
+        <div
+          className="absolute inset-0 z-20 grid place-items-center bg-black/60 backdrop-blur-sm"
+          onClick={() => setOpenBadge(null)}
+        >
+          <div
+            className="w-[88%] max-w-md rounded-xl border border-neutral-800 bg-neutral-950 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="flex items-center justify-between border-b border-neutral-900 px-4 py-3">
+              <div
+                className="inline-flex items-center gap-2 text-sm font-medium"
+                style={{ color: openBadge.color }}
+              >
+                <span>{openBadge.icon}</span>
+                <span>{openBadge.label}</span>
+              </div>
+              <button
+                onClick={() => setOpenBadge(null)}
+                className="text-neutral-500 hover:text-neutral-200"
+              >
+                ✕
+              </button>
+            </header>
+            <div className="max-h-[60vh] overflow-y-auto px-4 py-4">
+              {openBadge.detail()}
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </aside>
   );
 }
 
-function FullContent({ text }: { text: string }) {
+function BodyContent({ text, isCode }: { text: string; isCode: boolean }) {
   const [expanded, setExpanded] = useState(false);
-  const long = text.length > 400;
-  const display = !long || expanded ? text : text.slice(0, 400) + '…';
-
+  const long = text.length > 700;
+  const display = !long || expanded ? text : text.slice(0, 700) + '…';
+  if (isCode) {
+    return (
+      <pre className="mt-2 max-h-96 overflow-auto rounded-lg border border-neutral-800 bg-neutral-900/60 p-3 text-[12px] leading-relaxed text-neutral-300">
+        <code>{display}</code>
+      </pre>
+    );
+  }
   return (
-    <div className="mb-4">
-      <div className="mb-1 text-[10px] uppercase tracking-widest text-neutral-500">
-        Content
-      </div>
-      <p className="whitespace-pre-wrap text-sm text-neutral-300">{display}</p>
+    <div className="max-w-none">
+      <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-neutral-200">
+        {display}
+      </p>
       {long && (
         <button
           onClick={() => setExpanded(!expanded)}
-          className="mt-1 text-xs text-accent hover:underline"
+          className="mt-2 text-xs text-accent hover:underline"
         >
-          {expanded ? 'Show less' : `Show all (${text.length} chars)`}
+          {expanded ? 'Show less' : `Show all (${text.length.toLocaleString()} chars)`}
         </button>
       )}
     </div>

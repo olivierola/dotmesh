@@ -21,6 +21,8 @@ import { runtimeIsAlive, safeSendMessage, installRuntimeSelfDestruct } from '@/l
 import { isDomainBlocked } from '@/lib/blocked-domains';
 import { installHoverCapture } from '@/lib/hover-capture';
 import { installAttentionTracker } from '@/lib/attention-tracker';
+import { installQuickNote } from '@/lib/quick-note';
+import { installSelectionCapture } from '@/lib/selection-capture';
 
 /** Cleanup callbacks every install* function pushes; called on self-destruct. */
 const teardowns: Array<() => void> = [];
@@ -118,6 +120,8 @@ export default defineContentScript({
 
     try { installHoverCapture(); } catch (err) { console.warn('[Mesh] hover capture install failed', err); }
     try { installAttentionTracker(); } catch (err) { console.warn('[Mesh] attention tracker install failed', err); }
+    try { installQuickNote(); } catch (err) { console.warn('[Mesh] quick-note install failed', err); }
+    try { installSelectionCapture(); } catch (err) { console.warn('[Mesh] selection capture install failed', err); }
   },
 });
 
