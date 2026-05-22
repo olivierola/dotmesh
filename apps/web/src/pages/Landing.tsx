@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import DotGrid from '@/components/DotGrid';
 
 const NAV_LINKS = [
   { id: 'problem', label: 'Problem' },
@@ -48,14 +49,23 @@ export default function LandingPage() {
 function BackgroundGrid() {
   return (
     <div className="pointer-events-none fixed inset-0 -z-10">
-      <div
-        className="absolute inset-0 opacity-[0.04]"
-        style={{
-          backgroundImage:
-            'linear-gradient(to right, white 1px, transparent 1px), linear-gradient(to bottom, white 1px, transparent 1px)',
-          backgroundSize: '48px 48px',
-        }}
-      />
+      {/* Interactive dot-grid that lights up around the cursor and ripples
+          on click. Sits behind every section. Wrapper has pointer-events
+          none so it doesn't steal clicks from the content above. */}
+      <div className="absolute inset-0 opacity-70">
+        <DotGrid
+          dotSize={3}
+          gap={22}
+          baseColor="#1f1f1f"
+          activeColor="#f5b301"
+          proximity={140}
+          speedTrigger={130}
+          shockRadius={260}
+          shockStrength={6}
+          returnDuration={1.6}
+        />
+      </div>
+      {/* Soft radial glow at the top for visual depth */}
       <div
         className="absolute left-1/2 top-0 h-[600px] w-[1100px] -translate-x-1/2 opacity-20 blur-3xl"
         style={{
