@@ -34,6 +34,7 @@ function buildShadow(): { host: HTMLDivElement; shadow: ShadowRoot } {
   shadow.innerHTML = `
     <style>
       :host { all: initial; }
+      *, *::before, *::after { box-sizing: border-box; }
       .fab {
         width: 44px;
         height: 44px;
