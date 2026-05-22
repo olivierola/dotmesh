@@ -52,21 +52,56 @@ interface HistoryMessage {
   content: string;
 }
 
-function buildSystemPrompt(): string {
-  return [
+function buildSystemPrompt(hasMemories: boolean): string {
+  const base = [
     "You are Mesh, the user's personal AI assistant.",
     'You have access to a curated set of memories captured from the user activity (browsing, AI sessions, connected apps).',
     'Answer questions using these memories as your primary knowledge source.',
     'Citation rules:',
     '- When you use a memory, cite it inline as [n] where n is the 1-indexed position in the "Relevant memories" list.',
-    '- If no memory is relevant, say so plainly and answer from general knowledge.',
     'Tone: concise, friendly, French OR English matching the user message language.',
     'Never invent personal details about the user that are not present in the memories.',
-  ].join('\n');
+    'CRITICAL: never write the literal placeholder tokens "[none]", "(none)" or "(none found)" in your reply. ' +
+      'If no relevant memory exists, simply phrase the answer naturally ("je n\'ai pas encore de mémoire à ce sujet…") without any bracketed placeholder.',
+  ];
+  if (!hasMemories) {
+    base.push(
+      'IMPORTANT: for THIS turn, no memory was retrieved. Reply briefly using general knowledge OR ask a clarifying question. Do NOT mention citations, indexes or placeholders.',
+    );
+  }
+  return base.join('\n');
+}
+
+const TEMPORAL_RE = /(aujourd'hui|today|hier|yesterday|cette semaine|this week|ce mois|this month|ce matin|this morning|ce soir|tonight)/i;
+
+/**
+ * When the user asks about a time range we should not rely on the embedding
+ * to find the right memories — the embedding has no concept of "today".
+ * Fall back to a date-scoped fetch instead.
+ */
+function temporalSinceForQuery(message: string): string | null {
+  const m = message.match(TEMPORAL_RE);
+  if (!m) return null;
+  const tag = m[1]!.toLowerCase();
+  const now = Date.now();
+  const day = 86400_000;
+  if (/aujourd|today|ce matin|this morning|ce soir|tonight/i.test(tag)) {
+    return new Date(now - day).toISOString();
+  }
+  if (/hier|yesterday/i.test(tag)) {
+    return new Date(now - 2 * day).toISOString();
+  }
+  if (/cette semaine|this week/i.test(tag)) {
+    return new Date(now - 7 * day).toISOString();
+  }
+  return new Date(now - 30 * day).toISOString();
 }
 
 function buildContextBlock(hits: SearchHit[]): string {
-  if (hits.length === 0) return 'Relevant memories: (none found)';
+  // Callers should not invoke this with an empty array — when there are no
+  // memories we omit the entire context block from the LLM prompt rather
+  // than feeding it the literal string "(none)" which the model echoes.
+  if (hits.length === 0) return '';
   const lines = hits.map((h, i) => {
     const date = new Date(h.created_at).toISOString().split('T')[0];
     const md = (h.metadata ?? {}) as Record<string, unknown>;
@@ -154,7 +189,26 @@ Deno.serve(async (req) => {
     const embedding = await jinaEmbed(input.message);
 
     let hits: SearchHit[] = [];
-    if (embedding) {
+
+    // ---- Layer 1: temporal short-circuit -------------------------------
+    // "qu'est-ce que j'ai vu aujourd'hui ?" is impossible to answer via
+    // cosine similarity — the embedding doesn't know what "today" is.
+    // Detect those questions and fetch by date directly.
+    const temporalSince = temporalSinceForQuery(input.message);
+    if (temporalSince) {
+      const { data: recentRows } = await client
+        .from('context_nodes')
+        .select(
+          'id, content, summary, source, source_url, source_app, entities, tags, metadata, created_at',
+        )
+        .gt('created_at', temporalSince)
+        .order('created_at', { ascending: false })
+        .limit(input.top_k);
+      hits = ((recentRows ?? []) as SearchHit[]).map((r) => ({ ...r, score: 0.6 }));
+    }
+
+    // ---- Layer 2: hybrid search ----------------------------------------
+    if (hits.length === 0 && embedding) {
       const { data: hitsRaw, error: searchErr } = await client.rpc('hybrid_search', {
         p_query_text: input.message,
         p_query_embedding: embedding,
@@ -166,18 +220,20 @@ Deno.serve(async (req) => {
       if (searchErr) {
         console.warn('[Mesh] chat hybrid_search failed', searchErr);
       } else {
-        hits = ((hitsRaw ?? []) as SearchHit[]).filter((h) => h.score > 0.2);
+        // Score floor used to be 0.2 which dropped genuinely useful but
+        // low-confidence matches. Lower it AND keep at least the top 3
+        // even if they're below the floor — better to feed the LLM
+        // something than nothing.
+        const all = ((hitsRaw ?? []) as SearchHit[]);
+        const above = all.filter((h) => h.score > 0.1);
+        hits = above.length > 0 ? above : all.slice(0, 3);
       }
-    } else {
-      // No embedding available — fall back to FTS via the same RPC by sending a
-      // zero vector AND boosting top_k. Sparse branch in hybrid_search still
-      // returns results; we just lower the score threshold and re-rank by recency
-      // for ties.
+    } else if (hits.length === 0 && !embedding) {
       console.log('[Mesh] chat running in FTS-only mode (no embedding)');
       const { data: ftsRows, error: ftsErr } = await client
         .from('context_nodes')
         .select(
-          'id, content, summary, source, source_url, source_app, entities, tags, user_tags, created_at',
+          'id, content, summary, source, source_url, source_app, entities, tags, user_tags, metadata, created_at',
         )
         .textSearch('content_tsv', input.message, { type: 'plain', config: 'simple' })
         .order('created_at', { ascending: false })
@@ -187,6 +243,22 @@ Deno.serve(async (req) => {
       } else {
         hits = (ftsRows ?? []).map((r) => ({ ...r, score: 0.5 })) as SearchHit[];
       }
+    }
+
+    // ---- Layer 3: last-resort recency fallback -------------------------
+    // If after everything we have zero hits AND the user message is long
+    // enough to be a real question (not "hey"), pull the 5 most recent
+    // memories as broad context. The LLM is instructed to ignore them if
+    // they're irrelevant — better than answering blind.
+    if (hits.length === 0 && input.message.trim().length > 10) {
+      const { data: recentRows } = await client
+        .from('context_nodes')
+        .select(
+          'id, content, summary, source, source_url, source_app, entities, tags, metadata, created_at',
+        )
+        .order('created_at', { ascending: false })
+        .limit(5);
+      hits = ((recentRows ?? []) as SearchHit[]).map((r) => ({ ...r, score: 0.4 }));
     }
 
     // Recent chat history (last 8 turns)
@@ -213,8 +285,10 @@ Deno.serve(async (req) => {
 
     // Build LLM messages
     const llmMessages = [
-      { role: 'system' as const, content: buildSystemPrompt() },
-      { role: 'system' as const, content: buildContextBlock(hits) },
+      { role: 'system' as const, content: buildSystemPrompt(hits.length > 0) },
+      ...(hits.length > 0
+        ? [{ role: 'system' as const, content: buildContextBlock(hits) }]
+        : []),
       ...(agentBlock
         ? [
             {
