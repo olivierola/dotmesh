@@ -5,7 +5,7 @@
  */
 
 import { extractFromElement, contentFromExtracted, type NodeType } from './extract';
-import { safeSendMessage } from './runtime';
+import { safeSendMessage, runtimeIsAlive } from './runtime';
 
 type ElementType = 'text' | 'heading' | 'link' | 'image' | 'video' | 'code' | 'quote' | 'list-item';
 
@@ -214,6 +214,11 @@ export function installHoverCapture(): void {
   document.addEventListener(
     'pointermove',
     (e) => {
+      if (!runtimeIsAlive()) {
+        // Runtime gone — never show the "+" button on this stale tab.
+        if (buttonEl) buttonEl.style.display = 'none';
+        return;
+      }
       const now = Date.now();
       if (now - lastMoveAt < 60) return;
       lastMoveAt = now;

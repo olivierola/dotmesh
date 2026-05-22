@@ -31,6 +31,48 @@ export function runtimeIsAlive(): boolean {
 }
 
 /**
+ * Schedule a self-destruct on content-script side: as soon as the runtime
+ * goes invalid (background worker re-deployed, extension reloaded), remove
+ * every Mesh-owned DOM node (the "+" hover button, badge popups, decorated
+ * bubbles' badges row…) and call the provided teardown so that no more
+ * chrome.* calls will be attempted.
+ *
+ * We poll every 2s — cheap, runs synchronously, no extra event
+ * subscriptions.
+ */
+export function installRuntimeSelfDestruct(teardown: () => void): () => void {
+  let stopped = false;
+  const timer = setInterval(() => {
+    if (stopped) return;
+    if (runtimeIsAlive()) return;
+    stopped = true;
+    clearInterval(timer);
+    try {
+      teardown();
+    } catch (e) {
+      // Swallow — there's nothing useful we can do once the context is gone.
+      console.warn('[Mesh] self-destruct teardown failed', e);
+    }
+    // Remove any leftover Mesh DOM nodes so the host page is left clean.
+    try {
+      document
+        .querySelectorAll('[data-mesh-ui], #mesh-badge-popup, #mesh-badge-popup-backdrop')
+        .forEach((n) => n.parentNode?.removeChild(n));
+    } catch {
+      /* ignore */
+    }
+    console.warn(
+      '[Mesh] runtime invalidated — Mesh has self-destructed in this tab. ' +
+        'Refresh to re-attach.',
+    );
+  }, 2000);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
+}
+
+/**
  * Resolve(null) on any messaging error instead of throwing. Use this from
  * every fire-and-forget signal site so a dead background never crashes the
  * host page.

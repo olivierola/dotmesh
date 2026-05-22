@@ -17,10 +17,13 @@ import {
 } from '@/lib/injector';
 import { scheduleBubbleDecoration } from '@/lib/decorate-bubble';
 import { detectGenericChatbot } from '@/lib/auto-adapter';
-import { runtimeIsAlive, safeSendMessage } from '@/lib/runtime';
+import { runtimeIsAlive, safeSendMessage, installRuntimeSelfDestruct } from '@/lib/runtime';
 import { isDomainBlocked } from '@/lib/blocked-domains';
 import { installHoverCapture } from '@/lib/hover-capture';
 import { installAttentionTracker } from '@/lib/attention-tracker';
+
+/** Cleanup callbacks every install* function pushes; called on self-destruct. */
+const teardowns: Array<() => void> = [];
 
 export default defineContentScript({
   matches: ['<all_urls>'],
@@ -35,6 +38,17 @@ export default defineContentScript({
       );
       return;
     }
+
+    // When the extension is reloaded mid-session, every Mesh listener
+    // becomes a liability — they keep trying to talk to a dead background
+    // and trigger 'Extension context invalidated' / 'ERR_FAILED' floods
+    // in the host page console. The self-destructor polls runtimeIsAlive
+    // and tears everything down as soon as the connection drops.
+    installRuntimeSelfDestruct(() => {
+      for (const fn of teardowns.splice(0)) {
+        try { fn(); } catch { /* ignore */ }
+      }
+    });
 
     // Early bail-out on sensitive domains. We never inject NOR capture.
     try {
