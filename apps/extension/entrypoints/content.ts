@@ -23,6 +23,7 @@ import { installQuickNote } from '@/lib/quick-note';
 import { installSelectionCapture } from '@/lib/selection-capture';
 import { installVisitTracker } from '@/lib/visit-tracker';
 import { installChatbotSaveButtons } from '@/lib/chatbot-save';
+import { installHoverCapture } from '@/lib/hover-capture';
 
 /** Cleanup callbacks every install* function pushes; called on self-destruct. */
 const teardowns: Array<() => void> = [];
@@ -128,6 +129,10 @@ export default defineContentScript({
     try { installVisitTracker(); } catch (err) { console.warn('[Mesh] visit tracker failed', err); }
     try { installQuickNote(); } catch (err) { console.warn('[Mesh] quick-note install failed', err); }
     try { installSelectionCapture(); } catch (err) { console.warn('[Mesh] selection capture install failed', err); }
+    // Hover "+" on meaningful elements (long paragraphs, images, videos,
+    // code, quotes). The eligibility check inside hover-capture already
+    // filters out tiny / nav / non-content blocks — see isEligible().
+    try { installHoverCapture(); } catch (err) { console.warn('[Mesh] hover capture install failed', err); }
   },
 });
 

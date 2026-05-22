@@ -19,7 +19,7 @@ interface CaptureTarget {
   type: ElementType;
 }
 
-const MIN_TEXT_LEN = 20;
+const MIN_TEXT_LEN = 80;
 const BUTTON_SIZE = 28;
 const BUTTON_OFFSET = 6;
 
@@ -48,17 +48,32 @@ function classify(el: HTMLElement): ElementType | null {
 function isEligible(el: HTMLElement, type: ElementType): boolean {
   // Skip our own UI
   if (el.closest('[data-mesh-ui]')) return false;
+  // Skip navigation/header/footer/aside — these are chrome, not content.
+  // The user explicitly asked NOT to surface the "+" on nav-like elements.
+  if (el.closest('nav, header, footer, aside, [role="navigation"], [role="banner"], [role="contentinfo"]')) {
+    return false;
+  }
   // Already captured
   if (capturedSet.has(el)) return false;
   // Skip invisible
   const rect = el.getBoundingClientRect();
-  if (rect.width < 30 || rect.height < 15) return false;
+  if (rect.width < 60 || rect.height < 24) return false;
 
   if (type === 'image') {
-    const img = el as HTMLImageElement;
-    return !!(img.src || img.currentSrc) && img.naturalWidth > 80;
+    const img = el.tagName === 'IMG' ? (el as HTMLImageElement) : el.querySelector('img');
+    if (!img) return false;
+    // Only meaningful images: must have src AND a substantial natural size.
+    return !!(img.src || img.currentSrc) && img.naturalWidth >= 200 && img.naturalHeight >= 120;
   }
-  if (type === 'video') return true;
+  if (type === 'video') {
+    const v = el as HTMLVideoElement;
+    return rect.width >= 200 && rect.height >= 120 && (!!v.currentSrc || !!v.src || !!el.querySelector('source'));
+  }
+  if (type === 'link') {
+    // Skip nav-style short links (logos, menu items).
+    const text = (el.textContent ?? '').trim();
+    return text.length >= 30;
+  }
   const text = (el.textContent ?? '').trim();
   return text.length >= MIN_TEXT_LEN;
 }
