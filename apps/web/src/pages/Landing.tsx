@@ -29,7 +29,10 @@ export default function LandingPage() {
       <BackgroundGrid />
       <Navbar scrolled={scrolled} onLinkClick={scrollTo} />
 
-      <main className="relative">
+      {/* The BackgroundGrid sits at z-0 inside the page's stacking
+          context. Everything else must explicitly opt into z-10 so it
+          paints in front of the dot pattern. */}
+      <main className="relative z-10">
         <Hero />
         <ProblemSection />
         <HowItWorksSection />
@@ -47,11 +50,15 @@ export default function LandingPage() {
 // Background — subtle grid + radial gradient
 // ============================================================
 function BackgroundGrid() {
+  // pointer-events: none → clicks pass through to the content above.
+  // z-0 (NOT -z-10) → sits behind the z-10 main but above the parent's
+  // own background fill. -z-10 puts it BEHIND the parent's bg, which
+  // is what made the dots invisible.
   return (
-    <div className="pointer-events-none fixed inset-0 -z-10">
-      {/* Interactive dot-grid that lights up around the cursor and ripples
-          on click. Sits behind every section. Wrapper has pointer-events
-          none so it doesn't steal clicks from the content above. */}
+    <div
+      className="pointer-events-none fixed inset-0"
+      style={{ zIndex: 0 }}
+    >
       <div className="absolute inset-0">
         <DotGrid
           dotSize={2}
