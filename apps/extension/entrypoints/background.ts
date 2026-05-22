@@ -309,7 +309,10 @@ async function handleSignal(
       });
       return { ok: false, decision: result.decision };
     }
-    if (result.decision === 'block') {
+    // Sensitive-content block only applies to PASSIVE signals. If the user
+    // explicitly clicked the "+" button on a piece of text, they've already
+    // chosen to capture it — the extension shouldn't second-guess them.
+    if (!isExplicit && result.decision === 'block') {
       console.warn('[Mesh] signal blocked (sensitive content)', signal.signalType);
       return { ok: false, decision: 'block' };
     }
