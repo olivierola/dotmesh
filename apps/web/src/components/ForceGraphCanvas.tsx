@@ -184,33 +184,27 @@ export default function ForceGraphCanvas({
     fg.d3ReheatSimulation?.();
   }, [size.w, size.h]);
 
-  // Safety net: if a drag is interrupted (mouse left the window, ALT-tab
-  // mid-drag, etc.) onNodeDragEnd never fires and the dragged node stays
-  // pinned by fx/fy forever — every subsequent drag attempt feels "stuck"
-  // because the first node keeps tugging the graph from its frozen
-  // position. Listen for mouseup anywhere on the document and release
-  // pinned coordinates from every node.
+  // Safety net for interrupted drags on desktop: when the user alt-tabs
+  // mid-drag the window loses focus and react-force-graph never fires
+  // onNodeDragEnd, leaving the dragged node pinned. We track an
+  // isDragging ref via the lib's own start/end callbacks; on window
+  // blur we release fx/fy only if a drag is genuinely in progress.
+  // Importantly we no longer release on mouseup — that was racing with
+  // the library's own cleanup and corrupting state.
+  const isDraggingRef = useRef(false);
   useEffect(() => {
-    const release = () => {
+    const onBlur = () => {
+      if (!isDraggingRef.current) return;
+      isDraggingRef.current = false;
       for (const n of nodes) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const o = n as any;
-        if (typeof o.fx === 'number' || typeof o.fy === 'number') {
-          delete o.fx;
-          delete o.fy;
-        }
+        delete o.fx;
+        delete o.fy;
       }
     };
-    document.addEventListener('mouseup', release);
-    document.addEventListener('pointerup', release);
-    document.addEventListener('mouseleave', release);
-    window.addEventListener('blur', release);
-    return () => {
-      document.removeEventListener('mouseup', release);
-      document.removeEventListener('pointerup', release);
-      document.removeEventListener('mouseleave', release);
-      window.removeEventListener('blur', release);
-    };
+    window.addEventListener('blur', onBlur);
+    return () => window.removeEventListener('blur', onBlur);
   }, [nodes]);
 
   const ready = size.w > 0 && size.h > 0;
@@ -238,9 +232,11 @@ export default function ForceGraphCanvas({
           // (and other nodes after it) without getting stuck on the first
           // pin.
           onNodeDragStart={() => {
+            isDraggingRef.current = true;
             fgRef.current?.d3ReheatSimulation?.();
           }}
           onNodeDragEnd={(node: unknown) => {
+            isDraggingRef.current = false;
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const o = node as any;
             delete o.fx;

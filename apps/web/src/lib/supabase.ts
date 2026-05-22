@@ -15,7 +15,14 @@ export const supabase = createClient(url, anonKey, {
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: true,
-    flowType: 'pkce', // OAuth + magic-link both use PKCE; required for exchangeCodeForSession
+    // We use the implicit (hash-based) flow rather than PKCE so magic
+    // links work cross-device. PKCE requires the verifier from the
+    // initiating device to be present at the callback — fine for OAuth
+    // where the browser round-trip stays local, broken for magic links
+    // when the user clicks the email on their phone but started on their
+    // desktop. Implicit flow embeds the access_token directly in the URL
+    // hash, no verifier required.
+    flowType: 'implicit',
     storageKey: 'mesh-auth',
   },
 });
