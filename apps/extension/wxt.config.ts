@@ -17,7 +17,7 @@ export default defineConfig({
   manifest: {
     name: 'Mesh - Your AI memory',
     description: 'Capture, recall and inject personal context into every AI agent. EU-first.',
-    version: '0.2.0',
+    version: '0.3.0',
     permissions: ['storage', 'activeTab', 'scripting', 'alarms', 'contextMenus', 'notifications'],
     host_permissions: [
       // Anthropic / OpenAI / Google / Perplexity (original four).

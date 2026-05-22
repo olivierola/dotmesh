@@ -296,25 +296,35 @@ async function handleSignal(
     const auth = await getAuth();
     if (!auth) return { ok: false, decision: 'unauthenticated' };
 
-    // Explicit user actions (hover-click) bypass the scorer entirely.
-    // The scorer is only for passive/auto signals that may not deserve a push.
+    // Explicit user actions (the "+" hover button) bypass every local
+    // gating rule: drop AND block. The blocklist of sensitive domains
+    // (banks, mail, etc.) already prevents the extension from running on
+    // these sites at all — that's the real safety net. The content-pattern
+    // "password / credit card" heuristic in scoreSignal is too crude to
+    // override an explicit user click, so we treat it as advisory only.
     const isExplicit = signal.signalType === 'hover';
 
     const result = scoreSignal(signal);
-    if (!isExplicit && result.decision !== 'push') {
-      console.log('[Mesh] signal dropped by scorer', {
-        type: signal.signalType,
-        score: result.score,
-        reason: result.reason,
-      });
-      return { ok: false, decision: result.decision };
-    }
-    // Sensitive-content block only applies to PASSIVE signals. If the user
-    // explicitly clicked the "+" button on a piece of text, they've already
-    // chosen to capture it — the extension shouldn't second-guess them.
-    if (!isExplicit && result.decision === 'block') {
-      console.warn('[Mesh] signal blocked (sensitive content)', signal.signalType);
-      return { ok: false, decision: 'block' };
+    console.log('[Mesh] scorer decision:', {
+      type: signal.signalType,
+      decision: result.decision,
+      score: result.score,
+      reason: result.reason,
+      isExplicit,
+    });
+    if (!isExplicit) {
+      if (result.decision === 'block') {
+        console.warn('[Mesh] signal blocked (sensitive content)', signal.signalType);
+        return { ok: false, decision: 'block' };
+      }
+      if (result.decision !== 'push') {
+        console.log('[Mesh] signal dropped by scorer', {
+          type: signal.signalType,
+          score: result.score,
+          reason: result.reason,
+        });
+        return { ok: false, decision: result.decision };
+      }
     }
 
     const fingerprint = await fingerprintOf(signal.signalType, signal.content);
