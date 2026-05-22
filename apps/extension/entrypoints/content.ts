@@ -19,10 +19,10 @@ import { scheduleBubbleDecoration } from '@/lib/decorate-bubble';
 import { detectGenericChatbot } from '@/lib/auto-adapter';
 import { runtimeIsAlive, safeSendMessage, installRuntimeSelfDestruct } from '@/lib/runtime';
 import { isDomainBlocked } from '@/lib/blocked-domains';
-import { installHoverCapture } from '@/lib/hover-capture';
-import { installAttentionTracker } from '@/lib/attention-tracker';
 import { installQuickNote } from '@/lib/quick-note';
 import { installSelectionCapture } from '@/lib/selection-capture';
+import { installVisitTracker } from '@/lib/visit-tracker';
+import { installChatbotSaveButtons } from '@/lib/chatbot-save';
 
 /** Cleanup callbacks every install* function pushes; called on self-destruct. */
 const teardowns: Array<() => void> = [];
@@ -70,27 +70,29 @@ export default defineContentScript({
     let adapter = findAdapter(hostname);
     console.log('[Mesh] adapter for', hostname, '=', adapter?.label ?? '(none)');
 
+    const onChatbotInstalled = (chatAdapter: AgentAdapter) => {
+      // On chatbot pages we also install the "Save Q&A" button under
+      // every assistant message, so the user can store the question
+      // they just asked together with the answer in one click.
+      try {
+        installChatbotSaveButtons(chatAdapter);
+      } catch (err) {
+        console.warn('[Mesh] chatbot save buttons failed', err);
+      }
+    };
+
     if (adapter) {
       try {
         installAgentInjector(adapter);
+        onChatbotInstalled(adapter);
         console.log('[Mesh] injector installed for', adapter.label);
       } catch (err) {
         console.error('[Mesh] injector install failed', err);
       }
-      try {
-        installAgentSessionSignal(hostname);
-      } catch (err) {
-        console.warn('[Mesh] session signal install failed', err);
-      }
     } else {
-      // No explicit adapter for this site. Run passive capture, and ALSO
-      // watch the DOM for an unknown chatbot UI (widget on any site:
-      // Intercom, Crisp, custom React, embedded LLM agents…). When one
-      // appears we install the injector on the fly.
-      try { installReadingSignal(); } catch (err) { console.warn('[Mesh] reading signal failed', err); }
-      try { installSearchSignal(hostname); } catch (err) { console.warn('[Mesh] search signal failed', err); }
-      try { installActiveWorkSignal(hostname); } catch (err) { console.warn('[Mesh] active work signal failed', err); }
-
+      // No explicit chatbot adapter for this host. We still try to detect
+      // an embedded chatbot widget (Intercom, Crisp, etc.) but everything
+      // else gets the unified visit tracker.
       let installedFromAuto = false;
       const tryAutoInstall = () => {
         if (installedFromAuto) return;
@@ -100,6 +102,7 @@ export default defineContentScript({
         adapter = guess;
         try {
           installAgentInjector(guess);
+          onChatbotInstalled(guess);
           console.log('[Mesh] generic chatbot detected; injector installed', guess);
         } catch (err) {
           console.warn('[Mesh] auto-adapter install failed', err);
@@ -107,144 +110,26 @@ export default defineContentScript({
         }
       };
       tryAutoInstall();
-      // Most widgets mount async — watch the DOM for a window so we catch
-      // them as soon as they appear, then stop observing.
       const obs = new MutationObserver(() => {
         tryAutoInstall();
         if (installedFromAuto) obs.disconnect();
       });
       obs.observe(document.body, { subtree: true, childList: true });
-      // Hard cap so we don't observe forever on static pages.
       setTimeout(() => obs.disconnect(), 60_000);
     }
 
-    try { installHoverCapture(); } catch (err) { console.warn('[Mesh] hover capture install failed', err); }
-    try { installAttentionTracker(); } catch (err) { console.warn('[Mesh] attention tracker install failed', err); }
+    // Always-on UX, regardless of whether this page hosts a chatbot:
+    //   - visit tracker: one capture at the end of the visit,
+    //   - selection bubble: pill above any selected text,
+    //   - quick-note FAB: bottom-right floating button.
+    // The old hover "+" on every paragraph/image/link is GONE — it was
+    // too noisy and the user explicitly asked to keep only deliberate
+    // capture surfaces.
+    try { installVisitTracker(); } catch (err) { console.warn('[Mesh] visit tracker failed', err); }
     try { installQuickNote(); } catch (err) { console.warn('[Mesh] quick-note install failed', err); }
     try { installSelectionCapture(); } catch (err) { console.warn('[Mesh] selection capture install failed', err); }
   },
 });
-
-// --------------- Reading signal ----------------
-function installReadingSignal(): void {
-  let maxScroll = 0;
-  const start = Date.now();
-  let fired = false;
-
-  const onScroll = () => {
-    const h = document.documentElement;
-    const scroll = (h.scrollTop + window.innerHeight) / h.scrollHeight;
-    if (scroll > maxScroll) maxScroll = scroll;
-  };
-  window.addEventListener('scroll', onScroll, { passive: true });
-
-  const fire = (reason: 'dwell' | 'leave') => {
-    if (fired) return;
-    const dwell = Date.now() - start;
-    const article = document.querySelector('article, main, [role="main"]') ?? document.body;
-    const text = (article.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 4000);
-    if (text.length < 200) return;
-    fired = true;
-    safeSendMessage({
-      type: 'CAPTURE_SIGNAL',
-      signal: {
-        content: `[Reading] ${document.title}\n\n${text}`,
-        url: window.location.href,
-        signalType: 'reading',
-        dwellMs: dwell,
-        scrollDepth: maxScroll,
-      },
-      metadata: {
-        sourceApp: window.location.hostname,
-        captureType: 'reading',
-        elementType: 'text',
-        pageTitle: document.title,
-        capturedAt: new Date().toISOString(),
-        reason,
-      },
-    });
-  };
-
-  const check = () => {
-    if (fired) return;
-    const dwell = Date.now() - start;
-    // Either: dwell + some scroll  OR  long dwell without scroll (deep focus)
-    if ((dwell > 20_000 && maxScroll > 0.4) || dwell > 60_000) {
-      fire('dwell');
-    }
-  };
-  setInterval(check, 5_000);
-  window.addEventListener('beforeunload', () => fire('leave'));
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') fire('leave');
-  });
-}
-
-// --------------- AI session signal ----------------
-function installAgentSessionSignal(hostname: string): void {
-  let lastUrl = window.location.href;
-  let lastCaptureAt = 0;
-  let lastMessageCount = 0;
-
-  const tryCapture = (reason: 'url-change' | 'new-messages' | 'leave') => {
-    const now = Date.now();
-    if (now - lastCaptureAt < 20_000) return;
-    const messages = document.querySelectorAll(
-      '[data-message-author-role], [data-testid="conversation-turn"], main article',
-    );
-    if (messages.length < 2) return;
-    // Capture last 2 messages (typically last user prompt + assistant reply)
-    const last = Array.from(messages).slice(-2);
-    const text = last
-      .map((el) => (el.textContent ?? '').replace(/\s+/g, ' ').trim())
-      .join('\n---\n')
-      .slice(0, 4000);
-    if (text.length < 100) return;
-    lastCaptureAt = now;
-    lastMessageCount = messages.length;
-    safeSendMessage({
-      type: 'CAPTURE_SIGNAL',
-      signal: {
-        content: `[AI session @ ${hostname}]\n\n${text}`,
-        url: window.location.href,
-        signalType: 'ai_session',
-        dwellMs: 60_000,
-        scrollDepth: 1,
-      },
-      metadata: {
-        sourceApp: hostname,
-        captureType: 'ai_session',
-        elementType: 'text',
-        pageTitle: document.title,
-        capturedAt: new Date().toISOString(),
-        reason,
-        messageCount: messages.length,
-      },
-    });
-  };
-
-  // Periodic check: URL change OR new messages arrived
-  setInterval(() => {
-    if (window.location.href !== lastUrl) {
-      tryCapture('url-change');
-      lastUrl = window.location.href;
-      lastMessageCount = 0;
-      return;
-    }
-    const messages = document.querySelectorAll(
-      '[data-message-author-role], [data-testid="conversation-turn"], main article',
-    );
-    // If at least 2 new messages since last capture (typically a user→assistant exchange)
-    if (messages.length >= lastMessageCount + 2) {
-      tryCapture('new-messages');
-    }
-  }, 10_000);
-
-  window.addEventListener('beforeunload', () => tryCapture('leave'));
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') tryCapture('leave');
-  });
-}
 
 // --------------- Injection (killer feature) ----------------
 const TRIVIAL_PATTERNS = [
@@ -502,89 +387,3 @@ function installAgentInjector(adapter: AgentAdapter): void {
   }
 }
 
-// --------------- Search signal ----------------
-function installSearchSignal(hostname: string): void {
-  const isSearchEngine =
-    hostname.includes('google.') ||
-    hostname.includes('bing.com') ||
-    hostname.includes('duckduckgo.com') ||
-    hostname.includes('kagi.com');
-  if (!isSearchEngine) return;
-
-  const params = new URLSearchParams(window.location.search);
-  const query = params.get('q') ?? params.get('query');
-  if (!query || query.length < 4) return;
-
-  // Wait for the user to dwell + leave (proxy: 30s + visibilitychange)
-  const start = Date.now();
-  let fired = false;
-  const onLeave = () => {
-    if (fired) return;
-    const dwell = Date.now() - start;
-    if (dwell < 30_000) return;
-    fired = true;
-    safeSendMessage({
-      type: 'CAPTURE_SIGNAL',
-      signal: {
-        content: `[Search] "${query}" on ${hostname}\n${document.title}`,
-        url: window.location.href,
-        signalType: 'search',
-        dwellMs: dwell,
-        scrollDepth: 0,
-      },
-      metadata: { sourceApp: hostname },
-    });
-  };
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') onLeave();
-  });
-  window.addEventListener('beforeunload', onLeave);
-}
-
-// --------------- Active work signal ----------------
-function installActiveWorkSignal(hostname: string): void {
-  const isWorkApp =
-    hostname.includes('notion.so') ||
-    hostname.includes('docs.google.com') ||
-    hostname.includes('linear.app') ||
-    hostname.includes('github.com') ||
-    hostname.includes('figma.com');
-  if (!isWorkApp) return;
-
-  let lastFiredAt = 0;
-  let editsSinceFlush = 0;
-  let debounce: number | undefined;
-
-  const flush = () => {
-    if (editsSinceFlush < 3) return;
-    if (Date.now() - lastFiredAt < 60_000) return;
-    lastFiredAt = Date.now();
-    editsSinceFlush = 0;
-
-    const title = document.title;
-    const focused = document.activeElement;
-    const focusedText = focused && 'value' in focused
-      ? String((focused as HTMLInputElement).value ?? '').slice(0, 600)
-      : (focused?.textContent ?? '').slice(0, 600);
-
-    if (!focusedText || focusedText.length < 40) return;
-    safeSendMessage({
-      type: 'CAPTURE_SIGNAL',
-      signal: {
-        content: `[Active work - ${hostname}]\n${title}\n\n${focusedText}`,
-        url: window.location.href,
-        signalType: 'active_work',
-        dwellMs: 60_000,
-        scrollDepth: 0.5,
-      },
-      metadata: { sourceApp: hostname },
-    });
-  };
-
-  document.addEventListener('input', () => {
-    editsSinceFlush++;
-    if (debounce) clearTimeout(debounce);
-    debounce = window.setTimeout(flush, 60_000);
-  });
-  window.addEventListener('beforeunload', flush);
-}

@@ -100,10 +100,27 @@ async function handleCreate(req: Request): Promise<Response> {
 
   const persistedContent = cleanup.content;
   const persistedSummary = cleanup.summary;
+
+  // Merge the AI-generated title into metadata.extracted so the graph
+  // sidebar surfaces it as the document hero. Only overrides when the
+  // client didn't already supply one (preserves explicit user choices).
+  const existingExtracted =
+    (metaIn.extracted as Record<string, unknown> | undefined) ?? {};
   const persistedMetadata = {
     ...metaIn,
     raw_content_chars: input.content.length,
     cleanup_applied: cleanup.llm_applied,
+    ai_title: cleanup.title ?? null,
+    ai_summary: cleanup.summary ?? null,
+    extracted: {
+      ...existingExtracted,
+      title:
+        (existingExtracted.title as string | null | undefined) ?? cleanup.title ?? null,
+      description:
+        (existingExtracted.description as string | null | undefined) ??
+        cleanup.summary ??
+        null,
+    },
   };
 
   // Build fingerprint on the CLEANED content so two near-identical captures

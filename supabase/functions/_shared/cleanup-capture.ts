@@ -27,6 +27,8 @@ const MAX_SUMMARY_CHARS = 400;
 export interface CleanupResult {
   /** Cleaned, denoised text — what we store in `context_nodes.content`. */
   content: string;
+  /** 1-line title used by the graph sidebar and the Q&A badges. */
+  title: string | null;
   /** Short 1-2 sentence summary, stored in `context_nodes.summary`. */
   summary: string | null;
   /** True when the LLM actually ran; false when we returned the raw text. */
@@ -48,12 +50,17 @@ export async function cleanupCapture(opts: {
 }): Promise<CleanupResult> {
   const raw = (opts.rawContent ?? '').trim();
   if (raw.length < MIN_LEN_FOR_CLEANUP) {
-    return { content: raw, summary: null, llm_applied: false };
+    return { content: raw, title: null, summary: null, llm_applied: false };
   }
 
   // Plain-text path for code captures — formatting matters, never reflow.
   if (opts.elementType === 'code') {
-    return { content: raw.slice(0, MAX_CLEAN_CHARS), summary: null, llm_applied: false };
+    return {
+      content: raw.slice(0, MAX_CLEAN_CHARS),
+      title: opts.pageTitle ?? null,
+      summary: null,
+      llm_applied: false,
+    };
   }
 
   const sys =
@@ -61,9 +68,9 @@ export async function cleanupCapture(opts: {
     'You preserve facts and the user-visible information, but remove navigation menus, ' +
     'cookie banners, footer copyright, share/CTA buttons, repeated boilerplate, ' +
     'and any text that is not part of the actual content being captured. ' +
-    'You DO NOT summarise the content unless explicitly asked; you only clean it.';
+    'You also generate a short title and a 1-2 sentence summary for the capture.';
 
-  const userPrompt = `Clean the captured text below.
+  const userPrompt = `Clean the captured text below, then generate a title and a summary.
 
 Source: ${opts.source}${opts.sourceApp ? ` (${opts.sourceApp})` : ''}
 URL: ${opts.sourceUrl ?? '(none)'}
@@ -73,16 +80,26 @@ Element: ${opts.elementType ?? '(none)'}
 
 Return JSON in this exact shape:
 {
+  "title":   string,   // 4-12 word title naming what the capture is about, no quotes, max 120 chars
   "content": string,   // cleaned text, max ${MAX_CLEAN_CHARS} chars, preserves the real information
-  "summary": string    // 1-2 short sentences describing what was captured, max ${MAX_SUMMARY_CHARS} chars
+  "summary": string    // 1-2 sentences describing what's in the capture, max ${MAX_SUMMARY_CHARS} chars
 }
 
-Rules:
+Rules for title:
+- A noun phrase identifying the topic, NOT a question and NOT clickbait.
+- Match the source language.
+- For chatbot Q&A captures, summarise WHAT was asked about, not the verbatim question.
+
+Rules for content cleanup:
 - Keep the user-visible information intact (numbers, names, code, dates).
 - Drop nav, ads, cookie text, "subscribe to our newsletter", footer, share buttons.
 - Drop UI labels that aren't content ("Reply", "Like", "Share", "Read more").
 - Match the source language; never translate.
 - If nothing useful remains after cleaning, return "" for content.
+
+Rules for summary:
+- 1-2 sentences, descriptive ("Article comparing X and Y for use case Z"), not promotional.
+- Match the source language.
 
 Raw text:
 """
@@ -100,11 +117,16 @@ ${raw.slice(0, MAX_INPUT_CHARS)}
 
   if (!result) {
     // LLM unavailable — fall back to the raw text so capture still succeeds.
-    return { content: raw.slice(0, MAX_CLEAN_CHARS), summary: null, llm_applied: false };
+    return {
+      content: raw.slice(0, MAX_CLEAN_CHARS),
+      title: opts.pageTitle ?? null,
+      summary: null,
+      llm_applied: false,
+    };
   }
 
   try {
-    const parsed = JSON.parse(result) as { content?: unknown; summary?: unknown };
+    const parsed = JSON.parse(result) as { content?: unknown; summary?: unknown; title?: unknown };
     const cleaned =
       typeof parsed.content === 'string'
         ? parsed.content.trim().slice(0, MAX_CLEAN_CHARS)
@@ -113,14 +135,24 @@ ${raw.slice(0, MAX_INPUT_CHARS)}
       typeof parsed.summary === 'string'
         ? parsed.summary.trim().slice(0, MAX_SUMMARY_CHARS)
         : null;
+    const title =
+      typeof parsed.title === 'string'
+        ? parsed.title.trim().slice(0, 120)
+        : null;
     // If the model returned an empty cleaned content, prefer the raw (we
     // don't want to lose the capture entirely on a model hiccup).
     return {
       content: cleaned.length >= 20 ? cleaned : raw.slice(0, MAX_CLEAN_CHARS),
+      title: title && title.length >= 2 ? title : opts.pageTitle ?? null,
       summary: summary && summary.length >= 5 ? summary : null,
       llm_applied: cleaned.length >= 20,
     };
   } catch {
-    return { content: raw.slice(0, MAX_CLEAN_CHARS), summary: null, llm_applied: false };
+    return {
+      content: raw.slice(0, MAX_CLEAN_CHARS),
+      title: opts.pageTitle ?? null,
+      summary: null,
+      llm_applied: false,
+    };
   }
 }

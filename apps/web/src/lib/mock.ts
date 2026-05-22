@@ -64,6 +64,8 @@ export interface MockNode {
     author?: string;
     reason?: string;
     extracted?: ExtractedMetadata;
+    ai_title?: string | null;
+    ai_summary?: string | null;
     [key: string]: unknown;
   };
   collection_ids?: string[];
