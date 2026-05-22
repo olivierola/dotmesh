@@ -137,6 +137,18 @@ export default function ForceGraphCanvas({
   // around their hub). d3-force only seeds at the centre by default,
   // which produces an explosion that takes many ticks to settle.
   useEffect(() => {
+    // Purge any stale fx/fy left over from previous renders or drag
+    // sessions. Without this, nodes that were pinned via a misclicked
+    // right-click or an interrupted drag stay rigid for the whole
+    // session — the user reports "some nodes are draggable, others
+    // are not" which is exactly this state.
+    for (const n of nodes) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const o = n as any;
+      delete o.fx;
+      delete o.fy;
+    }
+
     const hubs = nodes.filter((n) => n.isHub);
     if (hubs.length === 0) return;
     const ringRadius = Math.max(220, hubs.length * 80);
@@ -246,17 +258,15 @@ export default function ForceGraphCanvas({
             onSelect?.(node as CanvasNode);
           }}
           onNodeRightClick={(node: unknown) => {
-            // Right-click toggles pin: if pinned (fx set) release it,
-            // otherwise pin at current position so the user can lock a node.
+            // Right-click ALWAYS unpins. The previous toggle (pin/unpin)
+            // was a footgun: a misclicked right-click pinned a node and
+            // then drags felt rigid for the rest of the session. Keep
+            // the unpin behaviour so users have an escape hatch when
+            // they want to free a stuck node.
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const o = node as any;
-            if (typeof o.fx === 'number') {
-              delete o.fx;
-              delete o.fy;
-            } else {
-              o.fx = o.x;
-              o.fy = o.y;
-            }
+            delete o.fx;
+            delete o.fy;
             fgRef.current?.d3ReheatSimulation?.();
           }}
           onBackgroundClick={() => onBackgroundClick?.()}
