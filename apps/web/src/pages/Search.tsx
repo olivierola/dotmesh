@@ -81,9 +81,17 @@ export default function SearchPage() {
   });
 
   const search = useMutation({
-    mutationFn: ({ q, f }: { q: string; f: Filters }) =>
-      api.search(q, 20, { filters: buildApiFilters(f), rerank: true }),
-    onSuccess: (data) => setReranked(data.reranked ?? null),
+    mutationFn: async ({ q, f }: { q: string; f: Filters }) => {
+      console.log('[Search] querying', q, buildApiFilters(f));
+      return api.search(q, 20, { filters: buildApiFilters(f), rerank: true });
+    },
+    onSuccess: (data) => {
+      console.log('[Search] got', data.results.length, 'results');
+      setReranked(data.reranked ?? null);
+    },
+    onError: (err) => {
+      console.error('[Search] failed', err);
+    },
   });
 
   const results: Result[] = useMemo(
@@ -278,14 +286,31 @@ export default function SearchPage() {
               {reranked ? ' · reranked' : ''}
             </p>
           )}
+          {search.isError && (
+            <div className="mb-3 rounded-md border border-red-900/60 bg-red-950/30 p-4 text-sm text-red-300">
+              <p className="font-medium">Search failed</p>
+              <p className="mt-1 text-xs text-red-400/80">
+                {(search.error as Error)?.message ?? 'Unknown error'}
+              </p>
+              <p className="mt-2 text-[11px] text-red-400/60">
+                Open the browser console for details.
+              </p>
+            </div>
+          )}
           {search.isPending && <SkeletonList count={4} />}
+          {!search.isSuccess && !search.isPending && !search.isError && (
+            <div className="rounded-md border border-dashed border-neutral-800 p-8 text-center text-xs text-neutral-500">
+              Type a query above and press Enter to search your memory.
+            </div>
+          )}
           <ul className="flex flex-col gap-2">
             {filtered.map((r) => (
               <ResultCard key={r.id} node={r} />
             ))}
             {search.isSuccess && filtered.length === 0 && (
               <li className="rounded-md border border-dashed border-neutral-800 p-6 text-center text-xs text-neutral-500">
-                No matches.
+                No matches for this query. Try a broader term or remove some
+                filters.
               </li>
             )}
           </ul>

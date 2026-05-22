@@ -198,6 +198,33 @@ Deno.serve(async (req) => {
     let hits = ((data ?? []) as Hit[]);
     hits = applyJsFilters(hits, input.filters);
 
+    // Recency fallback: when hybrid_search came back empty but the user
+    // typed a query (and no filters narrowed the universe to zero), pull
+    // the most recent nodes so we at least show something. Without it the
+    // page reads as "broken" on any query that doesn't share tokens with
+    // existing memory.
+    if (hits.length === 0 && !input.filters?.collection_id && !input.filters?.source) {
+      const sinceParam = parseInterval(input.filters?.since);
+      let recentQuery = client
+        .from('context_nodes')
+        .select(
+          'id, content, summary, source, source_url, source_app, node_type, entities, tags, user_tags, metadata, created_at',
+        )
+        .order('created_at', { ascending: false })
+        .limit(input.top_k);
+      if (sinceParam) {
+        const intervalMs =
+          (sinceParam.match(/^(\d+)\s+hours/)?.[1] ? 3600_000 : 86400_000) *
+          parseInt(sinceParam.match(/^(\d+)/)?.[1] ?? '7', 10);
+        recentQuery = recentQuery.gt(
+          'created_at',
+          new Date(Date.now() - intervalMs).toISOString(),
+        );
+      }
+      const { data: recent } = await recentQuery;
+      hits = ((recent ?? []) as Hit[]).map((r) => ({ ...r, score: 0.3 }));
+    }
+
     if (willRerank && hits.length > input.top_k) {
       hits = await rerankWithLLM(input.query, hits, input.top_k);
     } else {
