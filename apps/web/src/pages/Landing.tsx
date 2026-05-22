@@ -52,11 +52,11 @@ function BackgroundGrid() {
       {/* Interactive dot-grid that lights up around the cursor and ripples
           on click. Sits behind every section. Wrapper has pointer-events
           none so it doesn't steal clicks from the content above. */}
-      <div className="absolute inset-0 opacity-70">
+      <div className="absolute inset-0">
         <DotGrid
-          dotSize={3}
-          gap={22}
-          baseColor="#1f1f1f"
+          dotSize={2}
+          gap={20}
+          baseColor="#3a3a3a"
           activeColor="#f5b301"
           proximity={140}
           speedTrigger={130}
