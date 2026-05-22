@@ -238,13 +238,28 @@ export default function ForceGraphCanvas({
       {ready && (
         <FG
           ref={fgRef}
+          // Remount the canvas when the dataset cardinality changes. This
+          // forces react-force-graph to rebuild its internal pickability
+          // layer, which otherwise gets stale references to old node
+          // positions and leaves some nodes permanently unclickable on
+          // desktop.
+          key={`fg-${nodes.length}-${links.length}`}
           width={size.w}
           height={size.h}
           graphData={graphData}
           backgroundColor="#0a0a0a"
           cooldownTicks={300}
-          warmupTicks={50}
+          // High warmupTicks settles the simulation BEFORE the first paint,
+          // so every node has stable x/y when nodePointerAreaPaint builds
+          // the hit-test layer. Without enough warmup the picker disc gets
+          // painted at (0,0) for nodes still in flight.
+          warmupTicks={200}
           d3VelocityDecay={0.3}
+          // nodeVal drives the internal hit-test radius even when we provide
+          // a custom nodePointerAreaPaint. Setting it ensures every node
+          // has a real picker target, not the default radius of 0 that
+          // makes some nodes invisible to the mouse pointer.
+          nodeVal={(n: unknown) => ((n as CanvasNode).isHub ? 30 : 6)}
           nodeRelSize={1}
           enableNodeDrag={true}
           enablePanInteraction={true}
