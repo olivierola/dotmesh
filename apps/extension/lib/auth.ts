@@ -44,6 +44,22 @@ export async function ensureFreshAuth(): Promise<AuthState | null> {
   const auth = await getAuth();
   if (!auth) return null;
   if (auth.expiresAt > Date.now() + 60_000) return auth;
+  return refreshNow(auth);
+}
+
+/**
+ * Force a refresh regardless of expiry — used when the server returns
+ * 401 with an "asymmetric jwt" / "invalid jwt" message, which happens
+ * after Supabase rotates its JWKS in the background. Returns null when
+ * the refresh_token itself is dead (i.e. the user must really re-login).
+ */
+export async function forceRefreshAuth(): Promise<AuthState | null> {
+  const auth = await getAuth();
+  if (!auth) return null;
+  return refreshNow(auth);
+}
+
+async function refreshNow(auth: AuthState): Promise<AuthState | null> {
   if (!SUPABASE_URL) return auth;
   try {
     const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
@@ -56,6 +72,9 @@ export async function ensureFreshAuth(): Promise<AuthState | null> {
     });
     if (!res.ok) {
       console.warn('[Mesh] token refresh failed', res.status);
+      // 400/401 here means the refresh_token is no longer accepted —
+      // re-login required. Return null so the caller knows.
+      if (res.status === 400 || res.status === 401) return null;
       return auth;
     }
     const data = (await res.json()) as {

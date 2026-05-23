@@ -1,5 +1,5 @@
 import { getSetting } from './db';
-import { ensureFreshAuth } from './auth';
+import { ensureFreshAuth, forceRefreshAuth, clearAuth } from './auth';
 
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const apiBase = await getSetting<string>(
@@ -28,11 +28,32 @@ export async function pushNode(payload: {
   metadata?: Record<string, unknown>;
   fingerprint?: string;
 }): Promise<{ node_id: string } | { error: string }> {
+  const attempt = async () =>
+    apiFetch('/nodes', { method: 'POST', body: JSON.stringify(payload) });
+
   try {
-    const res = await apiFetch('/nodes', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
+    let res = await attempt();
+    // If the user's stored JWT has been invalidated (Supabase Auth rotated
+    // its JWKS, or the session was nuked server-side), the first call
+    // returns 401 with an "asymmetric jwt" / "invalid jwt" body. Force a
+    // refresh and retry once before giving up; the user shouldn't have
+    // to sign back in just because Supabase rolled keys in the background.
+    if (res.status === 401) {
+      const txt = await res.clone().text().catch(() => '');
+      const looksLikeAuthRotation =
+        /asymmetric|invalid[_ ]jwt|jwt expired/i.test(txt);
+      if (looksLikeAuthRotation) {
+        console.warn('[Mesh] pushNode 401 with stale JWT — refreshing and retrying');
+        const refreshed = await forceRefreshAuth();
+        if (refreshed) {
+          res = await attempt();
+        } else {
+          // Refresh failed too → the refresh_token is dead, only a real
+          // re-login can recover. Wipe local auth so the popup prompts.
+          await clearAuth();
+        }
+      }
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       console.warn('[Mesh] pushNode failed', res.status, text);
