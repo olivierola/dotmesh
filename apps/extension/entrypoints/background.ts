@@ -10,7 +10,7 @@
 import { defineBackground } from 'wxt/sandbox';
 import { db, getSetting, setSetting } from '@/lib/db';
 import { fingerprintOf } from '@/lib/fingerprint';
-import { pushNode, inject } from '@/lib/api-client';
+import { pushNode, inject, fetchBlockedDomains } from '@/lib/api-client';
 import { scoreSignal, type SignalInput } from '@/lib/scorer';
 import { shouldAttemptInjection, refreshKeywordsIfStale } from '@/lib/trigger';
 import { getAuth } from '@/lib/auth';
@@ -36,10 +36,15 @@ export default defineBackground(() => {
   // Periodic flush of pending queue + keyword refresh for the trigger scorer
   chrome.alarms.create('mesh-flush-queue', { periodInMinutes: 1 });
   chrome.alarms.create('mesh-refresh-keywords', { periodInMinutes: 10 });
+  chrome.alarms.create('mesh-sync-blocklist', { periodInMinutes: 5 });
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === 'mesh-flush-queue') flushQueue().catch((e) => console.warn('[Mesh] flush failed', e));
     if (alarm.name === 'mesh-refresh-keywords') refreshKeywordsIfStale().catch(console.warn);
+    if (alarm.name === 'mesh-sync-blocklist') syncBlocklist().catch((e) => console.warn('[Mesh] blocklist sync failed', e));
   });
+  // Eager sync on startup so the user's freshly-added blocks take effect
+  // without waiting up to 5 minutes for the alarm.
+  syncBlocklist().catch((e) => console.warn('[Mesh] initial blocklist sync failed', e));
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg.type === 'CAPTURE_SIGNAL') {
@@ -412,6 +417,14 @@ async function handleSignal(
     console.error('[Mesh] handleSignal threw', e);
     return { ok: false, decision: 'error', error: msg };
   }
+}
+
+async function syncBlocklist(): Promise<void> {
+  const auth = await getAuth();
+  if (!auth) return;
+  const domains = await fetchBlockedDomains();
+  await setSetting('extra_blocked_domains', domains);
+  console.log('[Mesh] blocklist synced —', domains.length, 'user domains');
 }
 
 async function flushQueue(): Promise<{ pushed: number; lastFailure: string | null }> {

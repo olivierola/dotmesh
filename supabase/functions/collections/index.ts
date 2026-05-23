@@ -206,6 +206,46 @@ Deno.serve(async (req) => {
       return jsonResponse({ collections: data ?? [] });
     }
 
+    // /collections/:id/nodes — list member nodes of a collection (paginated)
+    if (req.method === 'GET' && last === 'nodes' && beforeLast && beforeLast !== 'collections') {
+      const limit = Math.min(Number(url.searchParams.get('limit') ?? 50), 200);
+      const offset = Number(url.searchParams.get('offset') ?? 0);
+
+      const { data: links, error: linkErr } = await client
+        .from('node_collections')
+        .select('node_id, source, created_at')
+        .eq('collection_id', beforeLast)
+        .order('created_at', { ascending: false })
+        .range(offset, offset + limit - 1);
+      if (linkErr) return errorResponse('list_failed', 500, linkErr);
+
+      const nodeIds = (links ?? []).map((l) => l.node_id as string);
+      if (nodeIds.length === 0) {
+        return jsonResponse({ nodes: [], total: 0 });
+      }
+
+      const { data: nodes, error: nodeErr } = await client
+        .from('context_nodes')
+        .select('id, content, summary, tags, source, source_url, source_app, score, created_at, pinned, node_type, metadata')
+        .in('id', nodeIds);
+      if (nodeErr) return errorResponse('list_failed', 500, nodeErr);
+
+      const order = new Map(nodeIds.map((id, i) => [id, i]));
+      const sorted = (nodes ?? []).slice().sort((a, b) =>
+        (order.get(a.id as string) ?? 0) - (order.get(b.id as string) ?? 0),
+      );
+
+      const linkSourceById = new Map(
+        (links ?? []).map((l) => [l.node_id as string, l.source as string]),
+      );
+      const enriched = sorted.map((n) => ({
+        ...n,
+        link_source: linkSourceById.get(n.id as string) ?? 'auto',
+      }));
+
+      return jsonResponse({ nodes: enriched, total: enriched.length });
+    }
+
     if (req.method === 'GET' && id) {
       const { data, error } = await client
         .from('collections_with_stats')

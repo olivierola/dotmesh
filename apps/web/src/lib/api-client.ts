@@ -557,6 +557,51 @@ export const api = {
     await realFetch(`/collections/${id}`, { method: 'DELETE' });
   },
 
+  async getCollection(id: string): Promise<{
+    id: string;
+    name: string;
+    description: string | null;
+    rule_prompt: string | null;
+    filter: Record<string, unknown>;
+    is_default: boolean;
+    icon: string | null;
+    color: string | null;
+    pinned: boolean;
+    node_count: number;
+    last_node_at: string | null;
+    created_at: string;
+  }> {
+    const { collection } = await realFetch<{ collection: any }>(`/collections/${id}`);
+    return collection;
+  },
+
+  async listCollectionNodes(
+    id: string,
+    opts: { limit?: number; offset?: number } = {},
+  ): Promise<{
+    nodes: Array<{
+      id: string;
+      content: string;
+      summary: string | null;
+      tags: string[];
+      source: string;
+      source_url: string | null;
+      source_app: string | null;
+      score: number | null;
+      created_at: string;
+      pinned: boolean;
+      node_type: string | null;
+      metadata: Record<string, unknown>;
+      link_source: 'auto' | 'manual' | 'llm' | string;
+    }>;
+    total: number;
+  }> {
+    const params = new URLSearchParams();
+    if (opts.limit) params.set('limit', String(opts.limit));
+    if (opts.offset) params.set('offset', String(opts.offset));
+    return realFetch(`/collections/${id}/nodes?${params}`);
+  },
+
   async previewCollectionRules(
     rule_prompt: string,
   ): Promise<{

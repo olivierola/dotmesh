@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { formatDistanceToNow } from 'date-fns';
 import { api } from '@/lib/api-client';
@@ -159,7 +160,9 @@ function CollectionCard({
         </div>
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-sm font-semibold text-neutral-100">
-            {c.name}
+            <Link to={`/collections/${c.id}`} className="hover:text-accent">
+              {c.name}
+            </Link>
             {c.is_default && (
               <span className="ml-2 rounded border border-neutral-700 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-widest text-neutral-400">
                 default
@@ -200,6 +203,12 @@ function CollectionCard({
           </button>
         )}
         <div className="flex-1" />
+        <Link
+          to={`/collections/${c.id}`}
+          className="rounded border border-neutral-800 px-2 py-1 text-neutral-300 hover:border-neutral-700"
+        >
+          Open
+        </Link>
         <button
           onClick={onEdit}
           className="rounded border border-neutral-800 px-2 py-1 text-neutral-300 hover:border-neutral-700"
