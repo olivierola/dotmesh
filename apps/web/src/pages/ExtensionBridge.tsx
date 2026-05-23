@@ -5,18 +5,29 @@ import { supabase } from '@/lib/supabase';
  * /auth/extension-bridge?origin=<chrome-extension://…>
  *
  * Loaded in a new tab by the Mesh browser extension. We read the current
- * Supabase session and broadcast it back to the parent window so the
- * extension can store it and start making authenticated API calls.
+ * Supabase session and post it to `window` — the extension's bridge-content
+ * script intercepts it and forwards to the background worker.
  *
  * If the user is not signed in, we send them to /login first then bounce back.
  */
 export default function ExtensionBridgePage() {
-  const [status, setStatus] = useState<'loading' | 'sent' | 'needs-login' | 'no-opener'>(
-    'loading',
-  );
+  const [status, setStatus] = useState<
+    'loading' | 'sent' | 'needs-login' | 'no-extension'
+  >('loading');
 
   useEffect(() => {
     let cancelled = false;
+    let acked = false;
+
+    function onAck(ev: MessageEvent) {
+      if (ev.data?.type === 'mesh-auth-ack' && ev.data?.ok) {
+        acked = true;
+        if (!cancelled) setStatus('sent');
+        setTimeout(() => window.close(), 1200);
+      }
+    }
+    window.addEventListener('message', onAck);
+
     (async () => {
       const { data } = await supabase.auth.getSession();
       const session = data.session;
@@ -24,9 +35,10 @@ export default function ExtensionBridgePage() {
       if (!session) {
         if (cancelled) return;
         setStatus('needs-login');
-        // Bounce to /login then back here
         setTimeout(() => {
-          window.location.href = `/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`;
+          window.location.href = `/login?next=${encodeURIComponent(
+            window.location.pathname + window.location.search,
+          )}`;
         }, 800);
         return;
       }
@@ -39,23 +51,23 @@ export default function ExtensionBridgePage() {
         user: { id: session.user.id, email: session.user.email ?? '' },
       };
 
-      if (window.opener && typeof window.opener.postMessage === 'function') {
-        // The opener is the extension popup. Target origin '*' is required
-        // because chrome-extension:// origins are not honored by all browsers.
-        window.opener.postMessage(payload, '*');
-        if (!cancelled) setStatus('sent');
-        setTimeout(() => window.close(), 800);
-      } else {
-        if (!cancelled) setStatus('no-opener');
-      }
+      // Post to self — the extension's content script listens on this window.
+      window.postMessage(payload, window.location.origin);
+
+      // If we don't get an ack within 4s, the extension isn't installed/active.
+      setTimeout(() => {
+        if (!acked && !cancelled) setStatus('no-extension');
+      }, 4000);
     })();
+
     return () => {
       cancelled = true;
+      window.removeEventListener('message', onAck);
     };
   }, []);
 
   return (
-    <div className="grid h-full place-items-center bg-neutral-950 text-neutral-100">
+    <div className="grid h-full min-h-screen place-items-center bg-neutral-950 text-neutral-100">
       <div className="w-full max-w-sm rounded-2xl border border-neutral-800 bg-neutral-900/60 p-8 text-center">
         <div className="mb-4 text-2xl">🧠</div>
         {status === 'loading' && (
@@ -69,9 +81,10 @@ export default function ExtensionBridgePage() {
         {status === 'needs-login' && (
           <p className="text-sm text-neutral-400">Redirecting you to sign in…</p>
         )}
-        {status === 'no-opener' && (
+        {status === 'no-extension' && (
           <p className="text-sm text-red-400">
-            This page must be opened from the Mesh extension popup.
+            Could not reach the Mesh extension. Make sure it's installed and
+            reload this tab.
           </p>
         )}
       </div>

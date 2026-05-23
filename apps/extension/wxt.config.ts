@@ -20,6 +20,9 @@ export default defineConfig({
     version: '0.3.0',
     permissions: ['storage', 'activeTab', 'scripting', 'alarms', 'contextMenus', 'notifications'],
     host_permissions: [
+      // Mesh web app itself — needed by the auth-bridge content script.
+      'https://dotmesh.vercel.app/*',
+      'http://localhost:5173/*',
       // Anthropic / OpenAI / Google / Perplexity (original four).
       'https://*.claude.ai/*',
       'https://chatgpt.com/*',

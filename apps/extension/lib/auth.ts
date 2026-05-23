@@ -97,58 +97,45 @@ async function refreshNow(auth: AuthState): Promise<AuthState | null> {
 }
 
 /**
- * Open the web app login in a new tab and wait for postMessage with the session.
- * Resolves to true on success, false on user cancel / timeout.
+ * Open the web app's extension-bridge in a new tab. The bridge page posts a
+ * `mesh-auth` message which is intercepted by our content script (bridge-content)
+ * and forwarded to the background worker via chrome.runtime.sendMessage. The
+ * background writes the session to IndexedDB.
+ *
+ * We then poll `getAuth()` until it becomes non-null (success) or we time out.
+ * No reliance on window.opener — the extension popup typically closes before
+ * the new tab finishes loading, which used to break the old postMessage flow.
  */
 export function startLoginFlow(): Promise<boolean> {
   return new Promise((resolve) => {
     const bridge = `${WEB_URL}/auth/extension-bridge?origin=${encodeURIComponent(
       chrome.runtime.getURL(''),
     )}`;
-    const tab = window.open(bridge, '_blank');
-    if (!tab) {
-      resolve(false);
-      return;
+
+    // Wipe any stale credentials first so the new login replaces them cleanly.
+    void clearAuth();
+
+    try {
+      chrome.tabs.create({ url: bridge });
+    } catch {
+      // Fallback: window.open works from a popup context too, even if no opener.
+      window.open(bridge, '_blank');
     }
 
-    let resolved = false;
-    const timer = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        window.removeEventListener('message', onMessage);
+    const startedAt = Date.now();
+    const TIMEOUT_MS = 5 * 60_000;
+    const intervalId = setInterval(async () => {
+      const auth = await getAuth();
+      if (auth) {
+        clearInterval(intervalId);
+        resolve(true);
+        return;
+      }
+      if (Date.now() - startedAt > TIMEOUT_MS) {
+        clearInterval(intervalId);
         resolve(false);
       }
-    }, 5 * 60_000);
-
-    async function onMessage(ev: MessageEvent) {
-      if (!ev.data || typeof ev.data !== 'object') return;
-      if ((ev.data as { type?: string }).type !== 'mesh-auth') return;
-      const payload = ev.data as {
-        type: 'mesh-auth';
-        access_token: string;
-        refresh_token: string;
-        expires_in: number;
-        user: { id: string; email: string };
-      };
-      await setAuth({
-        accessToken: payload.access_token,
-        refreshToken: payload.refresh_token,
-        expiresAt: Date.now() + payload.expires_in * 1000,
-        userId: payload.user.id,
-        email: payload.user.email,
-      });
-      resolved = true;
-      clearTimeout(timer);
-      window.removeEventListener('message', onMessage);
-      try {
-        tab?.close();
-      } catch {
-        /* ignore */
-      }
-      resolve(true);
-    }
-
-    window.addEventListener('message', onMessage);
+    }, 800);
   });
 }
 

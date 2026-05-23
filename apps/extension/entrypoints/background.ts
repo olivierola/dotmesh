@@ -13,7 +13,7 @@ import { fingerprintOf } from '@/lib/fingerprint';
 import { pushNode, inject, fetchBlockedDomains } from '@/lib/api-client';
 import { scoreSignal, type SignalInput } from '@/lib/scorer';
 import { shouldAttemptInjection, refreshKeywordsIfStale } from '@/lib/trigger';
-import { getAuth } from '@/lib/auth';
+import { getAuth, setAuth } from '@/lib/auth';
 import { extractManual, type Extracted, type NodeType } from '@/lib/extract';
 import { touchSession } from '@/lib/session';
 import { isDomainBlocked } from '@/lib/blocked-domains';
@@ -47,6 +47,32 @@ export default defineBackground(() => {
   syncBlocklist().catch((e) => console.warn('[Mesh] initial blocklist sync failed', e));
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg.type === 'EXT_AUTH_PAYLOAD' && msg.payload) {
+      const p = msg.payload as {
+        access_token: string;
+        refresh_token: string;
+        expires_in: number;
+        user: { id: string; email: string };
+      };
+      setAuth({
+        accessToken: p.access_token,
+        refreshToken: p.refresh_token,
+        expiresAt: Date.now() + (p.expires_in ?? 3600) * 1000,
+        userId: p.user.id,
+        email: p.user.email,
+      })
+        .then(() => {
+          console.log('[Mesh] auth received via bridge content script');
+          sendResponse({ ok: true });
+          // Re-sync user blocklist now that we have credentials.
+          syncBlocklist().catch(() => {});
+        })
+        .catch((e) => {
+          console.warn('[Mesh] failed to persist bridge auth', e);
+          sendResponse({ ok: false });
+        });
+      return true;
+    }
     if (msg.type === 'CAPTURE_SIGNAL') {
       handleSignal(msg.signal as SignalInput, msg.metadata).then(sendResponse);
       return true; // async response
