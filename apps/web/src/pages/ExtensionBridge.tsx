@@ -51,13 +51,24 @@ export default function ExtensionBridgePage() {
         user: { id: session.user.id, email: session.user.email ?? '' },
       };
 
-      // Post to self — the extension's content script listens on this window.
+      // The content script attaches asynchronously; if we post once before it
+      // mounts its listener, the message is lost. Repost every 400ms until we
+      // get an ack, give up after ~10s.
+      const startedAt = Date.now();
+      const retry = setInterval(() => {
+        if (acked || cancelled) {
+          clearInterval(retry);
+          return;
+        }
+        window.postMessage(payload, window.location.origin);
+        if (Date.now() - startedAt > 10_000) {
+          clearInterval(retry);
+          if (!acked && !cancelled) setStatus('no-extension');
+        }
+      }, 400);
+      // Immediate first attempt — covers the case where the content script
+      // was already listening (extension installed before the tab was opened).
       window.postMessage(payload, window.location.origin);
-
-      // If we don't get an ack within 4s, the extension isn't installed/active.
-      setTimeout(() => {
-        if (!acked && !cancelled) setStatus('no-extension');
-      }, 4000);
     })();
 
     return () => {
