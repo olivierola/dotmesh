@@ -19,6 +19,18 @@ export default function NoteDetailPage() {
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
 
+  const [tipDismissed, setTipDismissed] = useState(
+    () => typeof window !== 'undefined' && localStorage.getItem('mesh:note-tip-dismissed') === '1',
+  );
+  const dismissTip = () => {
+    setTipDismissed(true);
+    try {
+      localStorage.setItem('mesh:note-tip-dismissed', '1');
+    } catch {
+      /* ignore */
+    }
+  };
+
   const { data, isLoading, error } = useQuery({
     queryKey: ['note', id],
     queryFn: () => api.getNote(id),
@@ -167,16 +179,28 @@ export default function NoteDetailPage() {
               </ul>
             </section>
           )}
-          <section>
-            <h3 className="mb-2 font-medium uppercase tracking-widest text-neutral-500">
-              Tip
-            </h3>
-            <p className="rounded-md border border-neutral-800 bg-neutral-900/40 p-2 leading-relaxed text-neutral-500">
-              Type <code className="text-accent">[[Note title]]</code> in the body to
-              link another note. Markdown shortcuts work: <code>**bold**</code>,{' '}
-              <code>## heading</code>, <code>- list</code>.
-            </p>
-          </section>
+          {!tipDismissed && (
+            <section>
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="font-medium uppercase tracking-widest text-neutral-500">
+                  Tip
+                </h3>
+                <button
+                  onClick={dismissTip}
+                  className="text-neutral-600 hover:text-neutral-300"
+                  title="Dismiss tip"
+                  aria-label="Dismiss tip"
+                >
+                  ✕
+                </button>
+              </div>
+              <p className="rounded-md border border-neutral-800 bg-neutral-900/40 p-2 leading-relaxed text-neutral-500">
+                Type <code className="text-accent">[[Note title]]</code> in the body to
+                link another note. Markdown shortcuts work: <code>**bold**</code>,{' '}
+                <code>## heading</code>, <code>- list</code>.
+              </p>
+            </section>
+          )}
         </div>
       </aside>
     </div>

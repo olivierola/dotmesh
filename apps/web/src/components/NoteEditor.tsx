@@ -140,7 +140,11 @@ export default function NoteEditor({ initialContent, onChange, placeholder }: Pr
 
   return (
     <div className="note-editor">
-      {editor && <Toolbar editor={editor} />}
+      {editor && (
+        <div className="sticky top-0 z-10 -mx-1 mb-3 bg-neutral-950/95 py-2 backdrop-blur">
+          <Toolbar editor={editor} />
+        </div>
+      )}
       <EditorContent editor={editor} />
       <style>{`
         .tiptap-note p.is-editor-empty:first-child::before {
@@ -199,7 +203,7 @@ function Toolbar({ editor }: { editor: Editor }) {
   };
 
   return (
-    <div className="mb-3 flex flex-wrap items-center gap-0.5 rounded-md border border-neutral-800 bg-neutral-900/60 p-1 text-xs">
+    <div className="flex flex-wrap items-center gap-0.5 rounded-md border border-neutral-800 bg-neutral-900/60 p-1 text-xs">
       <ToolGroup>
         <ToolBtn
           active={editor.isActive('heading', { level: 1 })}
