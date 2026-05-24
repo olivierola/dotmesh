@@ -13,7 +13,6 @@ const NAV = [
   { to: '/notes', label: 'Notes', icon: '📝' },
   { to: '/collections', label: 'Collections', icon: '📚' },
   { to: '/instructions', label: 'Instructions', icon: '📜' },
-  { to: '/search', label: 'Search', icon: '🔍' },
   { to: '/graph', label: 'Graph', icon: '🕸' },
   { to: '/rules', label: 'Rules', icon: '🛡' },
   { to: '/connectors', label: 'Connectors', icon: '🔗' },
@@ -265,7 +264,7 @@ function CommandPalette({ onClose }: { onClose: () => void }) {
                 <button
                   onClick={() => {
                     if (r.id.startsWith('/')) navigate(r.id);
-                    else navigate('/search');
+                    else navigate('/timeline');
                     onClose();
                   }}
                   className="block w-full px-4 py-2.5 text-left text-sm hover:bg-neutral-900"
