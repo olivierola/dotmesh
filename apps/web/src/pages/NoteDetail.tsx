@@ -142,22 +142,44 @@ export default function NoteDetailPage() {
       {/* Backlinks rail */}
       <aside className="hidden w-56 shrink-0 lg:block">
         <div className="sticky top-4 space-y-4 text-xs">
-          {(data?.links_out.length ?? 0) > 0 && (
+          {(data?.links_out.filter((l) => l.kind !== 'memory').length ?? 0) > 0 && (
             <section>
               <h3 className="mb-2 font-medium uppercase tracking-widest text-neutral-500">
-                Links to →
+                Notes linked →
               </h3>
               <ul className="space-y-1">
-                {data?.links_out.map((l) => (
-                  <li key={l.id}>
-                    <Link
-                      to={`/notes/${l.id}`}
-                      className="block truncate rounded px-2 py-1 text-neutral-300 hover:bg-neutral-900 hover:text-accent"
+                {data?.links_out
+                  .filter((l) => l.kind !== 'memory')
+                  .map((l) => (
+                    <li key={l.id}>
+                      <Link
+                        to={`/notes/${l.id}`}
+                        className="block truncate rounded px-2 py-1 text-neutral-300 hover:bg-neutral-900 hover:text-accent"
+                      >
+                        {l.title || '(untitled)'}
+                      </Link>
+                    </li>
+                  ))}
+              </ul>
+            </section>
+          )}
+          {(data?.links_out.filter((l) => l.kind === 'memory').length ?? 0) > 0 && (
+            <section>
+              <h3 className="mb-2 font-medium uppercase tracking-widest text-emerald-500/70">
+                ◆ Memories referenced
+              </h3>
+              <ul className="space-y-1">
+                {data?.links_out
+                  .filter((l) => l.kind === 'memory')
+                  .map((l) => (
+                    <li
+                      key={l.id}
+                      className="block truncate rounded border border-emerald-900/40 bg-emerald-900/10 px-2 py-1 text-emerald-200"
+                      title={l.id}
                     >
-                      {l.title || '(untitled)'}
-                    </Link>
-                  </li>
-                ))}
+                      {l.title || `memory ${l.id.slice(0, 8)}`}
+                    </li>
+                  ))}
               </ul>
             </section>
           )}

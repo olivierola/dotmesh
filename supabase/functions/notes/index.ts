@@ -42,6 +42,22 @@ function extractWikiTargets(md: string): string[] {
 }
 
 /**
+ * Extract `((node_id|title))` memory references from a raw markdown body.
+ * Returns just the node ids — these are resolved directly (no title match).
+ */
+function extractMemoryRefs(md: string): string[] {
+  const out = new Set<string>();
+  // node_id is a uuid most of the time but allow any token of 8+ chars.
+  const re = /\(\(([0-9a-f-]{8,}|[A-Za-z0-9_-]{8,})(?:\|[^)\n]{0,200})?\)\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(md))) {
+    const id = m[1]!.trim();
+    if (id) out.add(id);
+  }
+  return Array.from(out);
+}
+
+/**
  * Find existing notes (in this user's space) whose title matches one of the
  * given wiki-link targets (case-insensitive). Returns a map of normalized
  * title -> note id. Targets that don't resolve are simply ignored — the
@@ -83,7 +99,7 @@ async function syncWikiLinks(
   sourceNoteId: string,
   body: string,
 ): Promise<{ created: number }> {
-  const targets = extractWikiTargets(body);
+  // Wipe all outgoing note_link edges (covers both [[wiki]] + ((memory))).
   await service
     .from('context_edges')
     .delete()
@@ -91,22 +107,53 @@ async function syncWikiLinks(
     .eq('from_node', sourceNoteId)
     .eq('relation_type', 'note_link');
 
-  if (targets.length === 0) return { created: 0 };
-
-  const resolved = await resolveWikiTargets(service, userId, targets);
   let created = 0;
-  for (const [title, targetId] of resolved.entries()) {
-    if (targetId === sourceNoteId) continue;
-    const { error } = await service.from('context_edges').insert({
-      user_id: userId,
-      from_node: sourceNoteId,
-      to_node: targetId,
-      relation_type: 'note_link',
-      confidence: 1.0,
-      note: title,
-    });
-    if (!error) created++;
+
+  // --- 1. Note↔note wiki-links resolved by title ---
+  const wikiTargets = extractWikiTargets(body);
+  if (wikiTargets.length > 0) {
+    const resolved = await resolveWikiTargets(service, userId, wikiTargets);
+    for (const [title, targetId] of resolved.entries()) {
+      if (targetId === sourceNoteId) continue;
+      const { error } = await service.from('context_edges').insert({
+        user_id: userId,
+        from_node: sourceNoteId,
+        to_node: targetId,
+        relation_type: 'note_link',
+        confidence: 1.0,
+        note: title,
+      });
+      if (!error) created++;
+    }
   }
+
+  // --- 2. Note→memory refs resolved by node_id ---
+  const memoryIds = extractMemoryRefs(body);
+  if (memoryIds.length > 0) {
+    // Validate they exist and belong to the same user (RLS belt + suspenders).
+    const { data: existing } = await service
+      .from('context_nodes')
+      .select('id, summary, content')
+      .eq('user_id', userId)
+      .in('id', memoryIds);
+    for (const row of existing ?? []) {
+      const targetId = row.id as string;
+      if (targetId === sourceNoteId) continue;
+      const noteText =
+        ((row.summary as string | null) ?? '').slice(0, 200) ||
+        ((row.content as string | null) ?? '').slice(0, 200);
+      const { error } = await service.from('context_edges').insert({
+        user_id: userId,
+        from_node: sourceNoteId,
+        to_node: targetId,
+        relation_type: 'note_link',
+        confidence: 1.0,
+        note: noteText,
+      });
+      if (!error) created++;
+    }
+  }
+
   return { created };
 }
 
@@ -176,6 +223,26 @@ Deno.serve(async (req) => {
           .eq('relation_type', 'note_link'),
       ]);
 
+      // Resolve target/source nodes so we can tell notes vs memories apart.
+      const allLinkedIds = Array.from(
+        new Set([
+          ...((toRes.data ?? []).map((r) => r.to_node as string)),
+          ...((fromRes.data ?? []).map((r) => r.from_node as string)),
+        ]),
+      );
+      const sourceMap = new Map<string, string>();
+      if (allLinkedIds.length > 0) {
+        const { data: srcs } = await client
+          .from('context_nodes')
+          .select('id, source')
+          .in('id', allLinkedIds);
+        for (const r of srcs ?? []) {
+          sourceMap.set(r.id as string, (r.source as string | null) ?? '');
+        }
+      }
+      const kindOf = (nid: string) =>
+        sourceMap.get(nid) === 'manual_note' ? 'note' : 'memory';
+
       const md = (data.metadata as Record<string, unknown> | null) ?? {};
       return jsonResponse({
         note: {
@@ -191,10 +258,12 @@ Deno.serve(async (req) => {
         links_out: (toRes.data ?? []).map((r) => ({
           id: r.to_node as string,
           title: (r.note as string | null) ?? '',
+          kind: kindOf(r.to_node as string),
         })),
         links_in: (fromRes.data ?? []).map((r) => ({
           id: r.from_node as string,
           title: (r.note as string | null) ?? '',
+          kind: kindOf(r.from_node as string),
         })),
       });
     }

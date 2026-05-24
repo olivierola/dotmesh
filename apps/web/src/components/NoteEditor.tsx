@@ -24,6 +24,59 @@ import { api } from '@/lib/api-client';
 /*           WikiLink — custom inline atom node for [[…]]         */
 /* ------------------------------------------------------------- */
 
+/* ------------------------------------------------------------- */
+/*           MemoryRef — chip for ((node_id|Title))               */
+/* ------------------------------------------------------------- */
+
+const MemoryRef = Node.create({
+  name: 'memoryref',
+  group: 'inline',
+  inline: true,
+  atom: true,
+  selectable: true,
+  draggable: false,
+
+  addAttributes() {
+    return {
+      nodeId: {
+        default: '',
+        parseHTML: (el: HTMLElement) => el.getAttribute('data-node-id') ?? '',
+        renderHTML: (attrs: Record<string, unknown>) => ({
+          'data-node-id': (attrs.nodeId as string) ?? '',
+        }),
+      },
+      title: {
+        default: '',
+        parseHTML: (el: HTMLElement) => el.getAttribute('data-title') ?? '',
+        renderHTML: (attrs: Record<string, unknown>) => ({
+          'data-title': (attrs.title as string) ?? '',
+        }),
+      },
+    };
+  },
+
+  parseHTML() {
+    return [{ tag: 'span[data-memoryref]' }];
+  },
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  renderHTML({ node, HTMLAttributes }: { node: any; HTMLAttributes: Record<string, unknown> }) {
+    return [
+      'span',
+      mergeAttributes(HTMLAttributes, {
+        'data-memoryref': 'true',
+        class: 'mesh-memoryref',
+      }),
+      `${node.attrs.title || node.attrs.nodeId.slice(0, 8)}`,
+    ];
+  },
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  renderText({ node }: { node: any }) {
+    return `((${node.attrs.nodeId}|${node.attrs.title}))`;
+  },
+});
+
 const WikiLink = Node.create({
   name: 'wikilink',
   group: 'inline',
@@ -151,6 +204,12 @@ function renderInline(nodes: unknown[]): string {
         const title = ((node.attrs as Record<string, unknown> | undefined)?.title as string) ?? '';
         return `[[${title}]]`;
       }
+      if (node.type === 'memoryref') {
+        const attrs = (node.attrs as Record<string, unknown> | undefined) ?? {};
+        const id = (attrs.nodeId as string) ?? '';
+        const title = (attrs.title as string) ?? '';
+        return `((${id}|${title}))`;
+      }
       if (node.type !== 'text') return '';
       let txt = String(node.text ?? '');
       const marks = (node.marks as Array<Record<string, unknown>>) ?? [];
@@ -177,6 +236,7 @@ export default function NoteEditor({
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [urlOpen, setUrlOpen] = useState(false);
+  const [memoryPickerOpen, setMemoryPickerOpen] = useState(false);
 
   const editor = useEditor({
     extensions: [
@@ -191,6 +251,7 @@ export default function NoteEditor({
         autolink: true,
       }),
       WikiLink,
+      MemoryRef,
     ],
     content: markdownToHtml(initialContent),
     editorProps: {
@@ -223,6 +284,7 @@ export default function NoteEditor({
             editor={editor}
             onOpenNotePicker={() => setPickerOpen(true)}
             onOpenUrlModal={() => setUrlOpen(true)}
+            onOpenMemoryPicker={() => setMemoryPickerOpen(true)}
           />
         </div>
       )}
@@ -241,6 +303,22 @@ export default function NoteEditor({
               ])
               .run();
             setPickerOpen(false);
+          }}
+        />
+      )}
+      {memoryPickerOpen && editor && (
+        <MemoryPickerModal
+          onClose={() => setMemoryPickerOpen(false)}
+          onPick={({ id, title }) => {
+            editor
+              .chain()
+              .focus()
+              .insertContent([
+                { type: 'memoryref', attrs: { nodeId: id, title } },
+                { type: 'text', text: ' ' },
+              ])
+              .run();
+            setMemoryPickerOpen(false);
           }}
         />
       )}
@@ -340,6 +418,32 @@ export default function NoteEditor({
           outline: 2px solid #f5b301;
           outline-offset: 1px;
         }
+        .tiptap-note .mesh-memoryref {
+          display: inline-block;
+          background: rgba(52, 211, 153, 0.14);
+          color: #34d399;
+          border: 1px solid rgba(52, 211, 153, 0.4);
+          border-radius: 4px;
+          padding: 0 5px;
+          margin: 0 1px;
+          font-size: 0.9em;
+          line-height: 1.5;
+          cursor: pointer;
+          transition: background-color 120ms ease;
+          user-select: all;
+        }
+        .tiptap-note .mesh-memoryref::before {
+          content: '◆ ';
+          opacity: 0.6;
+          font-size: 0.8em;
+        }
+        .tiptap-note .mesh-memoryref:hover {
+          background: rgba(52, 211, 153, 0.24);
+        }
+        .tiptap-note .mesh-memoryref.ProseMirror-selectednode {
+          outline: 2px solid #34d399;
+          outline-offset: 1px;
+        }
       `}</style>
     </div>
   );
@@ -353,10 +457,12 @@ function Toolbar({
   editor,
   onOpenNotePicker,
   onOpenUrlModal,
+  onOpenMemoryPicker,
 }: {
   editor: Editor;
   onOpenNotePicker: () => void;
   onOpenUrlModal: () => void;
+  onOpenMemoryPicker: () => void;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-0.5 rounded-md border border-neutral-800 bg-neutral-900/60 p-1 text-xs">
@@ -465,6 +571,9 @@ function Toolbar({
         </ToolBtn>
         <ToolBtn onClick={onOpenNotePicker} title="Link another note">
           [[ ]]
+        </ToolBtn>
+        <ToolBtn onClick={onOpenMemoryPicker} title="Reference a memory">
+          (( ))
         </ToolBtn>
         <ToolBtn
           onClick={() => editor.chain().focus().setHorizontalRule().run()}
@@ -676,6 +785,107 @@ function NotePickerModal({
 }
 
 /* ------------------------------------------------------------- */
+/*                    Memory picker modal                         */
+/* ------------------------------------------------------------- */
+
+function MemoryPickerModal({
+  onPick,
+  onClose,
+}: {
+  onPick: (v: { id: string; title: string }) => void;
+  onClose: () => void;
+}) {
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState<Array<{ id: string; title: string; subtitle: string }>>([]);
+  const [loading, setLoading] = useState(false);
+
+  // Recent captures shown by default (no query).
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const { displayForNode } = await import('@/lib/node-display');
+        if (q.trim().length < 2) {
+          // Default: list recent captures (excluding manual notes).
+          const { nodes } = await api.listNodes({ limit: 30 });
+          if (cancelled) return;
+          setResults(
+            nodes
+              .filter((n) => (n as { source?: string }).source !== 'manual_note')
+              .map((n) => {
+                const d = displayForNode(n);
+                return { id: n.id, title: d.title, subtitle: d.subtitle ?? n.source };
+              }),
+          );
+        } else {
+          const res = await api.search(q, 12);
+          if (cancelled) return;
+          setResults(
+            res.results
+              .filter((r) => (r as { source?: string }).source !== 'manual_note')
+              .map((r) => {
+                const d = displayForNode(r);
+                return { id: r.id, title: d.title, subtitle: d.subtitle ?? r.source };
+              }),
+          );
+        }
+      } catch {
+        if (!cancelled) setResults([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [q]);
+
+  return (
+    <ModalShell title="Reference a memory" onClose={onClose}>
+      <div className="p-3">
+        <input
+          autoFocus
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && results.length > 0) {
+              const r = results[0]!;
+              onPick({ id: r.id, title: r.title });
+            }
+          }}
+          placeholder="Search your memories…"
+          className="w-full rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm placeholder-neutral-600 focus:border-accent focus:outline-none"
+        />
+      </div>
+      <ul className="max-h-80 overflow-y-auto border-t border-neutral-900">
+        {loading && <li className="px-4 py-3 text-xs text-neutral-500">Searching…</li>}
+        {!loading && results.length === 0 && (
+          <li className="px-4 py-6 text-center text-xs text-neutral-500">
+            {q.trim() ? 'No memories match.' : 'No memories yet.'}
+          </li>
+        )}
+        {!loading &&
+          results.map((r) => (
+            <li key={r.id}>
+              <button
+                onClick={() => onPick({ id: r.id, title: r.title })}
+                className="block w-full px-4 py-2.5 text-left hover:bg-neutral-900"
+              >
+                <div className="truncate text-sm text-neutral-100">{r.title}</div>
+                <div className="truncate text-[11px] text-neutral-500">{r.subtitle}</div>
+              </button>
+            </li>
+          ))}
+      </ul>
+      <div className="border-t border-neutral-900 px-4 py-2 text-[10px] text-neutral-600">
+        Type 2+ chars to search · ↵ pick first · esc close
+      </div>
+    </ModalShell>
+  );
+}
+
+/* ------------------------------------------------------------- */
 /*                          URL modal                             */
 /* ------------------------------------------------------------- */
 
@@ -859,6 +1069,14 @@ function escapeHtml(s: string): string {
 
 function inlineMd(s: string): string {
   let r = escapeHtml(s);
+  // MemoryRef ((id|title)) — before everything else so the parens aren't
+  // eaten by markdown link regex. Title is optional.
+  r = r.replace(/\(\(([0-9a-f-]{8,}|[A-Za-z0-9_-]{8,})(?:\|([^)\n]{0,200}))?\)\)/g, (_, id, title) => {
+    const tid = String(id).trim();
+    const ttitle = String(title ?? '').trim();
+    const display = ttitle || tid.slice(0, 8);
+    return `<span data-memoryref="true" data-node-id="${escapeHtml(tid)}" data-title="${escapeHtml(ttitle)}" class="mesh-memoryref">${escapeHtml(display)}</span>`;
+  });
   // Wiki-links come FIRST so [[Foo]] isn't accidentally eaten by the regular
   // [text](url) regex. The data-title attribute is what TipTap's parseHTML
   // reads to round-trip cleanly.

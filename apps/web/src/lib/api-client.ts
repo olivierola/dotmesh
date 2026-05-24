@@ -764,8 +764,8 @@ export const api = {
       created_at: string;
       updated_at: string | null;
     };
-    links_out: Array<{ id: string; title: string }>;
-    links_in: Array<{ id: string; title: string }>;
+    links_out: Array<{ id: string; title: string; kind?: 'note' | 'memory' }>;
+    links_in: Array<{ id: string; title: string; kind?: 'note' | 'memory' }>;
   }> {
     return realFetch(`/notes/${id}`);
   },
