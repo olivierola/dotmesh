@@ -61,6 +61,68 @@ function nodeRadius(n: CanvasNode): number {
   return n.isHub ? 14 + Math.min(n.size, 30) * 0.6 : 5 + Math.log(n.size + 1) * 1.2;
 }
 
+function hasPosition(n: CanvasNode): boolean {
+  return Number.isFinite(n.x) && Number.isFinite(n.y);
+}
+
+function hashUnit(value: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    h ^= value.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) / 0xffffffff;
+}
+
+function prepareNodesForCanvas(
+  nodes: CanvasNode[],
+  membersByHub: Map<string, string[]> | undefined,
+): void {
+  // ForceGraph builds its invisible pointer canvas on mount. Give every
+  // node a real x/y before that so desktop mouse hit-testing is reliable.
+  for (const n of nodes) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const o = n as any;
+    delete o.fx;
+    delete o.fy;
+  }
+
+  const hubs = nodes.filter((n) => n.isHub);
+  const ringRadius = Math.max(220, hubs.length * 80);
+  hubs.forEach((hub, i) => {
+    if (hasPosition(hub)) return;
+    const angle = (i / Math.max(hubs.length, 1)) * Math.PI * 2;
+    hub.x = Math.cos(angle) * ringRadius;
+    hub.y = Math.sin(angle) * ringRadius;
+  });
+
+  const hubById = new Map(hubs.map((h) => [h.id, h]));
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+  if (membersByHub) {
+    for (const [hubId, memberIds] of membersByHub) {
+      const hub = hubById.get(hubId);
+      if (!hub) continue;
+      memberIds.forEach((mid, j) => {
+        const m = nodeById.get(mid);
+        if (!m || hasPosition(m)) return;
+        const a = (j / Math.max(memberIds.length, 1)) * Math.PI * 2;
+        const r = 60 + hashUnit(mid) * 30;
+        m.x = (hub.x ?? 0) + Math.cos(a) * r;
+        m.y = (hub.y ?? 0) + Math.sin(a) * r;
+      });
+    }
+  }
+
+  let stray = 0;
+  for (const n of nodes) {
+    if (hasPosition(n)) continue;
+    const a = (stray++ * 137.5 * Math.PI) / 180;
+    const r = ringRadius * 1.4;
+    n.x = Math.cos(a) * r;
+    n.y = Math.sin(a) * r;
+  }
+}
+
 function drawNode(
   ctx: CanvasRenderingContext2D,
   n: CanvasNode,
@@ -190,7 +252,10 @@ export default function ForceGraphCanvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodes, membersByHub]);
 
-  const graphData = useMemo(() => ({ nodes, links }), [nodes, links]);
+  const graphData = useMemo(() => {
+    prepareNodesForCanvas(nodes, membersByHub);
+    return { nodes, links };
+  }, [nodes, links, membersByHub]);
 
   // Tune forces once the instance is ready.
   // - Soft link force (low strength) so the user can stretch / pull edges
@@ -329,14 +394,20 @@ export default function ForceGraphCanvas({
             node: unknown,
             color: string,
             ctx: CanvasRenderingContext2D,
+            scale: number,
           ) => {
             const n = node as CanvasNode;
             // Make the hit-test area substantially larger than the visible
             // node so small leaves remain easy to grab on desktop (mouse
             // pointer is a 1px target — without padding many nodes feel
-            // unpickable). Hubs already render large so they only need a
-            // small buffer.
-            const r = nodeRadius(n) + (n.isHub ? 4 : 10);
+            // unpickable). Keep a minimum SCREEN-pixel target so zoomed-out
+            // graphs remain draggable on PC.
+            const safeScale = Math.max(scale || 1, 0.05);
+            const minScreenRadius = n.isHub ? 24 : 20;
+            const r = Math.max(
+              nodeRadius(n) + (n.isHub ? 6 : 12),
+              minScreenRadius / safeScale,
+            );
             ctx.fillStyle = color;
             ctx.beginPath();
             ctx.arc(n.x ?? 0, n.y ?? 0, r, 0, Math.PI * 2);
