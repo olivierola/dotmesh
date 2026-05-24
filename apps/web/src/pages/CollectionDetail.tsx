@@ -208,11 +208,15 @@ function NodeRow({
         </div>
 
         <div className="min-w-0 flex-1">
-          {/* Title */}
-          <h4 className="text-[15px] font-medium leading-snug text-neutral-100">
+          {/* Title — clickable to toggle expansion */}
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="block w-full text-left text-[15px] font-medium leading-snug text-neutral-100 hover:text-accent"
+          >
             {node.pinned && <span className="mr-1 text-accent">★</span>}
             {display.title}
-          </h4>
+          </button>
 
           {/* Body */}
           {display.body && (
@@ -229,6 +233,13 @@ function NodeRow({
                 </button>
               )}
             </div>
+          )}
+
+          {/* If no body at all, show a hint that the title IS the memory */}
+          {!display.body && expanded && (
+            <p className="mt-2 text-[11px] italic text-neutral-500">
+              Nothing more to show — the title above is the full memory.
+            </p>
           )}
 
           {/* Footer */}
