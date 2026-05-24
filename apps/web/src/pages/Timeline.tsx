@@ -6,6 +6,7 @@ import type { MockNode } from '@/lib/mock';
 import CaptureBar, { type CapturePayload } from '@/components/CaptureBar';
 import { SkeletonList } from '@/components/Skeleton';
 import { displayForNode } from '@/lib/node-display';
+import MemoryPreviewModal from '@/components/MemoryPreviewModal';
 
 interface SessionGroup {
   /** session_id or 'older' for nodes with no session_id. */
@@ -388,6 +389,7 @@ function NodeRow({
   const display = displayForNode(n);
   const [draft, setDraft] = useState(display.title);
   const [expanded, setExpanded] = useState(false);
+  const [preview, setPreview] = useState(false);
 
   return (
     <li
@@ -536,16 +538,13 @@ function NodeRow({
                   </span>
                 </>
               )}
-              {n.source_url && (
-                <a
-                  href={n.source_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="ml-auto rounded border border-neutral-800 px-2 py-0.5 text-neutral-400 hover:border-accent hover:text-accent"
-                >
-                  open ↗
-                </a>
-              )}
+              <button
+                onClick={() => setPreview(true)}
+                className="ml-auto rounded border border-neutral-800 px-2 py-0.5 text-neutral-400 hover:border-accent hover:text-accent"
+                title="Open captured content"
+              >
+                open
+              </button>
             </div>
 
             {n.entities.length > 0 && (
@@ -563,6 +562,24 @@ function NodeRow({
           </>
         )}
       </div>
+      {preview && (
+        <MemoryPreviewModal
+          input={{
+            id: n.id,
+            title: display.title,
+            body: n.content,
+            summary: n.summary,
+            source: n.source,
+            source_url: n.source_url ?? null,
+            source_app: n.source_app ?? null,
+            created_at: n.created_at,
+            node_type: n.node_type ?? null,
+            tags: n.tags,
+            metadata: n.metadata as Record<string, unknown>,
+          }}
+          onClose={() => setPreview(false)}
+        />
+      )}
     </li>
   );
 }

@@ -11,6 +11,7 @@ import {
 import { supabase } from '@/lib/supabase';
 import type { MockChatMessage, MockChatSession } from '@/lib/mock';
 import ChatInput, { type ChatInputPayload } from '@/components/ui/chat-input';
+import MemoryPreviewModal from '@/components/MemoryPreviewModal';
 
 interface UiMessage {
   id: string;
@@ -573,58 +574,19 @@ function CitedContent({ content, hits }: { content: string; hits: ChatHit[] }) {
 }
 
 function SourceModal({ hit, onClose }: { hit: ChatHit; onClose: () => void }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm"
-      onClick={onClose}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-xl overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950 shadow-2xl"
-      >
-        <header className="flex items-center justify-between border-b border-neutral-900 px-5 py-3">
-          <div className="flex items-center gap-2">
-            <span className="grid h-6 w-6 place-items-center rounded-full border border-accent/40 bg-accent/15 text-[10px] font-semibold text-accent">
-              {hit.index}
-            </span>
-            <h3 className="text-sm font-semibold text-neutral-100">Source</h3>
-          </div>
-          <button
-            onClick={onClose}
-            className="text-neutral-500 hover:text-neutral-200"
-            aria-label="Close"
-          >
-            ✕
-          </button>
-        </header>
-        <div className="max-h-[70vh] overflow-y-auto px-5 py-4">
-          <p className="whitespace-pre-line text-[14px] leading-relaxed text-neutral-200">
-            {hit.summary}
-          </p>
-          <div className="mt-4 border-t border-neutral-900 pt-3 text-[11px] text-neutral-500">
-            <div className="font-medium text-neutral-400">{hit.source}</div>
-            {hit.source_url && (
-              <a
-                href={hit.source_url}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-1 inline-block break-all text-accent hover:underline"
-              >
-                ↗ {hit.source_url}
-              </a>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
+    <MemoryPreviewModal
+      input={{
+        id: hit.id,
+        title: null, // let displayForNode derive it from the summary / url
+        summary: hit.summary,
+        body: hit.summary,
+        source: hit.source,
+        source_url: hit.source_url ?? null,
+        citationIndex: hit.index,
+      }}
+      onClose={onClose}
+    />
   );
 }
 
@@ -962,37 +924,31 @@ function AgentBadge({ agent }: { agent: AgentUsed }) {
 }
 
 function Sources({ hits }: { hits: ChatHit[] }) {
+  const [openHit, setOpenHit] = useState<ChatHit | null>(null);
   return (
-    <details className="ml-10 rounded-md border border-neutral-800 bg-neutral-950/50 text-xs">
-      <summary className="cursor-pointer px-3 py-1.5 text-neutral-400 hover:text-neutral-200">
-        Sources ({hits.length})
-      </summary>
-      <ul className="space-y-1.5 border-t border-neutral-900 p-3">
-        {hits.map((h) => (
-          <li key={h.id} className="flex gap-2">
-            <span className="shrink-0 text-neutral-500">[{h.index}]</span>
-            <div className="min-w-0 flex-1">
-              <p className="line-clamp-2 text-neutral-300">{h.summary}</p>
-              <p className="mt-0.5 text-[10px] text-neutral-500">
-                {h.source}
-                {h.source_url && (
-                  <>
-                    {' · '}
-                    <a
-                      href={h.source_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="underline hover:text-neutral-300"
-                    >
-                      open
-                    </a>
-                  </>
-                )}
-              </p>
-            </div>
-          </li>
-        ))}
-      </ul>
-    </details>
+    <>
+      <details className="ml-10 rounded-md border border-neutral-800 bg-neutral-950/50 text-xs">
+        <summary className="cursor-pointer px-3 py-1.5 text-neutral-400 hover:text-neutral-200">
+          Sources ({hits.length})
+        </summary>
+        <ul className="space-y-1.5 border-t border-neutral-900 p-3">
+          {hits.map((h) => (
+            <li key={h.id}>
+              <button
+                onClick={() => setOpenHit(h)}
+                className="flex w-full gap-2 rounded px-1 py-1 text-left hover:bg-neutral-900/60"
+              >
+                <span className="shrink-0 text-neutral-500">[{h.index}]</span>
+                <div className="min-w-0 flex-1">
+                  <p className="line-clamp-2 text-neutral-300">{h.summary}</p>
+                  <p className="mt-0.5 text-[10px] text-neutral-500">{h.source}</p>
+                </div>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </details>
+      {openHit && <SourceModal hit={openHit} onClose={() => setOpenHit(null)} />}
+    </>
   );
 }

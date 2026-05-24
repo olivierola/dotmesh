@@ -14,6 +14,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { api } from '@/lib/api-client';
 import { SkeletonList } from '@/components/Skeleton';
 import { displayForNode } from '@/lib/node-display';
+import MemoryPreviewModal from '@/components/MemoryPreviewModal';
 
 export default function CollectionDetailPage() {
   const { id = '' } = useParams<{ id: string }>();
@@ -179,6 +180,7 @@ function NodeRow({
   };
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [preview, setPreview] = useState(false);
   // displayForNode expects MockNode-ish; the row shape is a superset of what
   // it actually reads, so the cast is safe.
   const display = displayForNode(node as unknown as Parameters<typeof displayForNode>[0]);
@@ -268,18 +270,32 @@ function NodeRow({
           </div>
         </div>
 
-        {node.source_url && (
-          <a
-            href={node.source_url}
-            target="_blank"
-            rel="noreferrer"
-            className="shrink-0 rounded border border-neutral-800 px-2 py-1 text-[11px] text-neutral-400 hover:border-accent hover:text-accent"
-            title={node.source_url}
-          >
-            open ↗
-          </a>
-        )}
+        <button
+          onClick={() => setPreview(true)}
+          className="shrink-0 rounded border border-neutral-800 px-2 py-1 text-[11px] text-neutral-400 hover:border-accent hover:text-accent"
+          title="Open captured content"
+        >
+          open
+        </button>
       </div>
+      {preview && (
+        <MemoryPreviewModal
+          input={{
+            id: node.id,
+            title: display.title,
+            body: node.content,
+            summary: node.summary,
+            source: node.source,
+            source_url: node.source_url ?? null,
+            source_app: node.source_app ?? null,
+            created_at: node.created_at,
+            node_type: node.node_type ?? null,
+            tags: node.tags,
+            metadata: node.metadata as Record<string, unknown>,
+          }}
+          onClose={() => setPreview(false)}
+        />
+      )}
     </li>
   );
 }
