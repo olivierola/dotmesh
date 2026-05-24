@@ -736,6 +736,66 @@ export const api = {
     return realFetch('/collections/reclassify-orphans', { method: 'POST' });
   },
 
+  // ----- Manual notes -----
+  async listNotes(): Promise<
+    Array<{
+      id: string;
+      title: string;
+      content: string;
+      html: string | null;
+      tags: string[];
+      pinned: boolean;
+      created_at: string;
+      updated_at: string | null;
+    }>
+  > {
+    const { notes } = await realFetch<{ notes: any[] }>('/notes');
+    return notes;
+  },
+
+  async getNote(id: string): Promise<{
+    note: {
+      id: string;
+      title: string;
+      content: string;
+      html: string | null;
+      tags: string[];
+      pinned: boolean;
+      created_at: string;
+      updated_at: string | null;
+    };
+    links_out: Array<{ id: string; title: string }>;
+    links_in: Array<{ id: string; title: string }>;
+  }> {
+    return realFetch(`/notes/${id}`);
+  },
+
+  async createNote(input: {
+    title: string;
+    content?: string;
+    html?: string;
+  }): Promise<{ id: string }> {
+    const { note } = await realFetch<{ note: { id: string } }>('/notes', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+    return note;
+  },
+
+  async updateNote(
+    id: string,
+    patch: { title?: string; content?: string; html?: string },
+  ): Promise<void> {
+    await realFetch(`/notes/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  async deleteNote(id: string): Promise<void> {
+    await realFetch(`/notes/${id}`, { method: 'DELETE' });
+  },
+
   // ----- Maintenance -----
   /**
    * Re-runs LLM summary + entity extraction + embeddings on up to ~100 of the
