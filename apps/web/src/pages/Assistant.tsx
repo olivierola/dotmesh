@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { formatDistanceToNow } from 'date-fns';
-import { api, type ChatHit, type AgentUsed } from '@/lib/api-client';
+import {
+  api,
+  type ChatHit,
+  type AgentUsed,
+  type InsightPayload,
+  type InsightCount,
+} from '@/lib/api-client';
 import { supabase } from '@/lib/supabase';
 import type { MockChatMessage, MockChatSession } from '@/lib/mock';
 import ChatInput, { type ChatInputPayload } from '@/components/ui/chat-input';
@@ -13,6 +19,7 @@ interface UiMessage {
   cited_nodes: string[];
   hits?: ChatHit[];
   agent_used?: AgentUsed | null;
+  insight?: InsightPayload | null;
   created_at: string;
   streaming?: boolean;
 }
@@ -21,8 +28,28 @@ const SUGGESTIONS = [
   'What did I read this week about agent memory?',
   'Summarize my last conversations with Sophie.',
   'What deadlines do I have coming up?',
-  'List the projects I worked on recently.',
+  'Generate my insights for the week.',
 ];
+
+/**
+ * Detect whether the user is asking for an insight digest. Returns the
+ * desired window in days, or null if no insight intent.
+ */
+function detectInsightIntent(text: string): number | null {
+  const lower = text.toLowerCase();
+  const isInsight =
+    /\b(insight|insights|digest|résum[ée]|recap|briefing|wrap[- ]?up|debrief)\b/i.test(lower);
+  if (!isInsight) return null;
+  // Window heuristic: month / week / Nd
+  if (/\b(month|mois|30\s?d|monthly)\b/.test(lower)) return 30;
+  if (/\b(year|année|annuel|annual|365)\b/.test(lower)) return 365;
+  const m = lower.match(/(\d+)\s*(day|jour)/);
+  if (m) {
+    const n = parseInt(m[1]!, 10);
+    if (Number.isFinite(n) && n > 0) return Math.min(n, 365);
+  }
+  return 7;
+}
 
 export default function AssistantPage() {
   const qc = useQueryClient();
@@ -127,6 +154,46 @@ export default function AssistantPage() {
       streaming: true,
     };
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
+
+    // Intent: on-demand insights digest. We skip the chat stream entirely
+    // and embed an InsightCard in the assistant bubble. The card carries its
+    // own narrative so there's no need for separate prose.
+    const insightDays = detectInsightIntent(text);
+    if (insightDays !== null) {
+      try {
+        const res = await api.generateInsight(insightDays);
+        const intro = res.insight
+          ? `Here's your digest for the last ${insightDays} day${insightDays > 1 ? 's' : ''} — ${res.node_count} memories analyzed.`
+          : `No memories captured in the last ${insightDays} day${insightDays > 1 ? 's' : ''} yet.`;
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantMsg.id
+              ? {
+                  ...m,
+                  content: intro,
+                  insight: res.insight,
+                  streaming: false,
+                }
+              : m,
+          ),
+        );
+      } catch (e) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantMsg.id
+              ? {
+                  ...m,
+                  content: `Could not generate insights: ${(e as Error).message}`,
+                  streaming: false,
+                }
+              : m,
+          ),
+        );
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
 
     try {
       for await (const ev of api.chatStream(activeSession, text)) {
@@ -473,7 +540,186 @@ function MessageBubble({ msg }: { msg: UiMessage }) {
             )}
           </div>
         </div>
+        {msg.insight && <InsightCard insight={msg.insight} />}
         {msg.hits && msg.hits.length > 0 && <Sources hits={msg.hits} />}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------- */
+/*                  On-demand insight card                        */
+/* ------------------------------------------------------------- */
+
+const INSIGHT_TYPE_COLORS: Record<string, string> = {
+  text: '#60a5fa',
+  image: '#f472b6',
+  video: '#fb923c',
+  link: '#22d3ee',
+  code: '#a78bfa',
+  quote: '#facc15',
+  page: '#34d399',
+  action: '#e879f9',
+};
+
+function InsightCard({ insight }: { insight: InsightPayload }) {
+  const [open, setOpen] = useState(true);
+  const windowLabel =
+    insight.window_days === 7
+      ? 'this week'
+      : insight.window_days === 30
+        ? 'this month'
+        : `last ${insight.window_days} days`;
+
+  return (
+    <article className="ml-10 overflow-hidden rounded-xl border border-accent/30 bg-gradient-to-br from-accent/5 to-neutral-950">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-accent/5"
+      >
+        <div className="flex items-center gap-3">
+          <span className="text-lg">✨</span>
+          <div>
+            <div className="text-sm font-medium text-neutral-100">
+              Insights — {windowLabel}
+            </div>
+            <div className="text-[11px] text-neutral-500">
+              {insight.node_count} memories ·{' '}
+              {formatDistanceToNow(new Date(insight.generated_at), { addSuffix: true })}
+            </div>
+          </div>
+        </div>
+        <span className="text-xs text-neutral-500">{open ? '▾' : '▸'}</span>
+      </button>
+
+      {open && (
+        <div className="space-y-5 border-t border-accent/20 p-4">
+          {insight.narrative && (
+            <p className="whitespace-pre-line text-[13px] leading-relaxed text-neutral-200">
+              {insight.narrative}
+            </p>
+          )}
+
+          {insight.type_breakdown.length > 0 && (
+            <InsightBlock title="Capture mix">
+              <InsightTypeBar items={insight.type_breakdown} />
+            </InsightBlock>
+          )}
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            {insight.themes.length > 0 && (
+              <InsightBlock title="Top themes">
+                <InsightList items={insight.themes} />
+              </InsightBlock>
+            )}
+            {insight.people.length > 0 && (
+              <InsightBlock title="Key people">
+                <InsightList items={insight.people} />
+              </InsightBlock>
+            )}
+            {insight.top_authors.length > 0 && (
+              <InsightBlock title="Authors you read">
+                <InsightList items={insight.top_authors} />
+              </InsightBlock>
+            )}
+            {insight.top_sites.length > 0 && (
+              <InsightBlock title="Where attention went">
+                <InsightList items={insight.top_sites} />
+              </InsightBlock>
+            )}
+            {insight.top_keywords.length > 0 && (
+              <InsightBlock title="Top keywords">
+                <div className="flex flex-wrap gap-1">
+                  {insight.top_keywords.map((k) => (
+                    <span
+                      key={k.label}
+                      className="rounded-full border border-neutral-800 bg-neutral-900/60 px-2 py-0.5 text-[11px] text-neutral-300"
+                    >
+                      {k.label}
+                      <span className="ml-1 text-neutral-500">{k.count}</span>
+                    </span>
+                  ))}
+                </div>
+              </InsightBlock>
+            )}
+            {insight.decisions.length > 0 && (
+              <InsightBlock title="Decisions made">
+                <ul className="space-y-1.5 text-[12px] text-neutral-300">
+                  {insight.decisions.map((d, i) => (
+                    <li key={i}>· {d.text}</li>
+                  ))}
+                </ul>
+              </InsightBlock>
+            )}
+            {insight.expiring.length > 0 && (
+              <InsightBlock title="Expiring soon">
+                <p className="text-[12px] text-neutral-400">
+                  {insight.expiring.length} memories will auto-delete this week.
+                </p>
+              </InsightBlock>
+            )}
+          </div>
+        </div>
+      )}
+    </article>
+  );
+}
+
+function InsightBlock({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
+      <h4 className="mb-2 text-[10px] font-medium uppercase tracking-widest text-neutral-500">
+        {title}
+      </h4>
+      {children}
+    </div>
+  );
+}
+
+function InsightList({ items }: { items: InsightCount[] }) {
+  return (
+    <ul className="space-y-1 text-[12px]">
+      {items.map((t) => (
+        <li key={t.label} className="flex justify-between text-neutral-300">
+          <span className="truncate" title={t.label}>
+            {t.label}
+          </span>
+          <span className="text-neutral-500">{t.count}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function InsightTypeBar({ items }: { items: InsightCount[] }) {
+  const total = items.reduce((s, i) => s + i.count, 0);
+  if (total === 0) return null;
+  return (
+    <div>
+      <div className="flex h-2 overflow-hidden rounded-full">
+        {items.map((i) => (
+          <span
+            key={i.label}
+            title={`${i.label}: ${i.count}`}
+            style={{
+              width: `${(i.count / total) * 100}%`,
+              background: INSIGHT_TYPE_COLORS[i.label] ?? '#525252',
+            }}
+          />
+        ))}
+      </div>
+      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-neutral-400">
+        {items.map((i) => (
+          <span key={i.label} className="inline-flex items-center gap-1.5">
+            <span
+              className="inline-block h-1.5 w-1.5 rounded-full"
+              style={{ background: INSIGHT_TYPE_COLORS[i.label] ?? '#525252' }}
+            />
+            {i.label}
+            <span className="text-neutral-500">{i.count}</span>
+          </span>
+        ))}
       </div>
     </div>
   );

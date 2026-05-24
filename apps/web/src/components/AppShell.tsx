@@ -13,7 +13,6 @@ const NAV = [
   { to: '/instructions', label: 'Instructions', icon: '📜' },
   { to: '/search', label: 'Search', icon: '🔍' },
   { to: '/graph', label: 'Graph', icon: '🕸' },
-  { to: '/insights', label: 'Insights', icon: '✨' },
   { to: '/rules', label: 'Rules', icon: '🛡' },
   { to: '/connectors', label: 'Connectors', icon: '🔗' },
   { to: '/settings', label: 'Settings', icon: '⚙' },

@@ -13,7 +13,6 @@ import SettingsPage from '@/pages/Settings';
 import RulesPage from '@/pages/Rules';
 import ConnectorsPage from '@/pages/Connectors';
 import OnboardingPage from '@/pages/Onboarding';
-import InsightsPage from '@/pages/Insights';
 import DashboardPage from '@/pages/Dashboard';
 import AssistantPage from '@/pages/Assistant';
 import SlackChannelsPage from '@/pages/SlackChannels';
@@ -153,7 +152,6 @@ export default function App() {
       <Route path="/instructions" element={<Shell><InstructionsPage /></Shell>} />
       <Route path="/search" element={<Shell><SearchPage /></Shell>} />
       <Route path="/graph" element={<Shell><GraphPage /></Shell>} />
-      <Route path="/insights" element={<Shell><InsightsPage /></Shell>} />
       <Route path="/rules" element={<Shell><RulesPage /></Shell>} />
       <Route path="/connectors" element={<Shell><ConnectorsPage /></Shell>} />
       <Route path="/connectors/slack/channels" element={<Shell><SlackChannelsPage /></Shell>} />

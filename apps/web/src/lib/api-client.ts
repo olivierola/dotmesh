@@ -29,6 +29,26 @@ export interface ChatHit {
 
 export type AgentUsed = 'daily_briefing' | 'follow_up' | 'meeting_prep';
 
+export interface InsightCount {
+  label: string;
+  count: number;
+}
+
+export interface InsightPayload {
+  window_days: number;
+  node_count: number;
+  themes: InsightCount[];
+  people: InsightCount[];
+  top_authors: InsightCount[];
+  top_sites: InsightCount[];
+  type_breakdown: InsightCount[];
+  top_keywords: InsightCount[];
+  decisions: Array<{ text: string; node_id: string }>;
+  expiring: Array<{ node_id: string; ttl_at: string }>;
+  narrative: string | null;
+  generated_at: string;
+}
+
 export type ChatStreamEvent =
   | { type: 'meta'; session_id: string; hits: ChatHit[]; agent_used: AgentUsed | null }
   | { type: 'delta'; text: string }
@@ -714,6 +734,17 @@ export const api = {
     created: string[];
   }> {
     return realFetch('/collections/reclassify-orphans', { method: 'POST' });
+  },
+
+  // ----- Insights (on-demand) -----
+  async generateInsight(days = 7): Promise<{
+    ok: boolean;
+    days: number;
+    node_count: number;
+    insight: InsightPayload | null;
+    note?: string;
+  }> {
+    return realFetch(`/insights-on-demand?days=${days}`, { method: 'POST' });
   },
 
   // ----- Account -----
