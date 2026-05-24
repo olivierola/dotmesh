@@ -13,12 +13,74 @@
  * HTML (cached in metadata.note_html for faster previews).
  */
 
-import { useEditor, EditorContent, type Editor } from '@tiptap/react';
+import { useEditor, EditorContent, type Editor, Node, mergeAttributes, InputRule } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import Link from '@tiptap/extension-link';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api-client';
+
+/* ------------------------------------------------------------- */
+/*           WikiLink — custom inline atom node for [[…]]         */
+/* ------------------------------------------------------------- */
+
+const WikiLink = Node.create({
+  name: 'wikilink',
+  group: 'inline',
+  inline: true,
+  atom: true,
+  selectable: true,
+  draggable: false,
+
+  addAttributes() {
+    return {
+      title: {
+        default: '',
+        parseHTML: (el: HTMLElement) => el.getAttribute('data-title') ?? '',
+        renderHTML: (attrs: Record<string, unknown>) => ({
+          'data-title': (attrs.title as string) ?? '',
+        }),
+      },
+    };
+  },
+
+  parseHTML() {
+    return [{ tag: 'span[data-wikilink]' }];
+  },
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  renderHTML({ node, HTMLAttributes }: { node: any; HTMLAttributes: Record<string, unknown> }) {
+    return [
+      'span',
+      mergeAttributes(HTMLAttributes, {
+        'data-wikilink': 'true',
+        class: 'mesh-wikilink',
+      }),
+      `${node.attrs.title}`,
+    ];
+  },
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  renderText({ node }: { node: any }) {
+    return `[[${node.attrs.title}]]`;
+  },
+
+  addInputRules() {
+    return [
+      new InputRule({
+        find: /\[\[([^\]\n]{1,200})\]\]$/,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: ({ range, match, commands }: { range: any; match: RegExpMatchArray; commands: any }) => {
+          const title = match[1]!.trim();
+          if (!title) return;
+          commands.deleteRange(range);
+          commands.insertContent({ type: 'wikilink', attrs: { title } });
+          commands.insertContent(' ');
+        },
+      }),
+    ];
+  },
+});
 
 interface Props {
   initialContent: string;
@@ -85,6 +147,10 @@ function renderInline(nodes: unknown[]): string {
       const node = n as Record<string, unknown>;
       if (node.type === 'paragraph') return renderInline((node.content as unknown[]) ?? []);
       if (node.type === 'hardBreak') return '\n';
+      if (node.type === 'wikilink') {
+        const title = ((node.attrs as Record<string, unknown> | undefined)?.title as string) ?? '';
+        return `[[${title}]]`;
+      }
       if (node.type !== 'text') return '';
       let txt = String(node.text ?? '');
       const marks = (node.marks as Array<Record<string, unknown>>) ?? [];
@@ -124,6 +190,7 @@ export default function NoteEditor({
         openOnClick: false,
         autolink: true,
       }),
+      WikiLink,
     ],
     content: markdownToHtml(initialContent),
     editorProps: {
@@ -165,7 +232,14 @@ export default function NoteEditor({
           excludeIds={excludeNoteIds ?? []}
           onClose={() => setPickerOpen(false)}
           onPick={(title) => {
-            editor.chain().focus().insertContent(`[[${title}]] `).run();
+            editor
+              .chain()
+              .focus()
+              .insertContent([
+                { type: 'wikilink', attrs: { title } },
+                { type: 'text', text: ' ' },
+              ])
+              .run();
             setPickerOpen(false);
           }}
         />
@@ -245,6 +319,27 @@ export default function NoteEditor({
           overflow-x: auto;
         }
         .tiptap-note a { color: #f5b301; text-decoration: underline; }
+        .tiptap-note .mesh-wikilink {
+          display: inline-block;
+          background: rgba(245, 179, 1, 0.14);
+          color: #f5b301;
+          border: 1px solid rgba(245, 179, 1, 0.35);
+          border-radius: 4px;
+          padding: 0 5px;
+          margin: 0 1px;
+          font-size: 0.9em;
+          line-height: 1.5;
+          cursor: pointer;
+          transition: background-color 120ms ease;
+          user-select: all;
+        }
+        .tiptap-note .mesh-wikilink:hover {
+          background: rgba(245, 179, 1, 0.24);
+        }
+        .tiptap-note .mesh-wikilink.ProseMirror-selectednode {
+          outline: 2px solid #f5b301;
+          outline-offset: 1px;
+        }
       `}</style>
     </div>
   );
@@ -764,6 +859,13 @@ function escapeHtml(s: string): string {
 
 function inlineMd(s: string): string {
   let r = escapeHtml(s);
+  // Wiki-links come FIRST so [[Foo]] isn't accidentally eaten by the regular
+  // [text](url) regex. The data-title attribute is what TipTap's parseHTML
+  // reads to round-trip cleanly.
+  r = r.replace(/\[\[([^\]\n]{1,200})\]\]/g, (_, raw) => {
+    const title = String(raw).trim();
+    return `<span data-wikilink="true" data-title="${escapeHtml(title)}" class="mesh-wikilink">${escapeHtml(title)}</span>`;
+  });
   r = r.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   r = r.replace(/\*(.+?)\*/g, '<em>$1</em>');
   r = r.replace(/`([^`]+?)`/g, '<code>$1</code>');
