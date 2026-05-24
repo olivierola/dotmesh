@@ -40,6 +40,79 @@ interface Props {
   onClose: () => void;
 }
 
+/**
+ * Walks a body string, finds bare URLs (http/https) and renders each as a
+ * compact pill (favicon + host + short path) instead of the noisy raw URL.
+ * Everything outside a URL stays as-is so formatting / newlines survive.
+ */
+function BodyWithLinkBadges({ text }: { text: string }) {
+  // Stops at whitespace, closing bracket/paren that usually wrap URLs in
+  // markdown / prose, and common trailing punctuation.
+  const URL_RE = /https?:\/\/[^\s<>"'\]\)]+/g;
+  const parts: Array<{ kind: 'text'; value: string } | { kind: 'url'; value: string }> = [];
+  let cursor = 0;
+  let m: RegExpExecArray | null;
+  while ((m = URL_RE.exec(text))) {
+    if (m.index > cursor) parts.push({ kind: 'text', value: text.slice(cursor, m.index) });
+    // Trim trailing punctuation that's rarely part of the URL.
+    let url = m[0];
+    while (url.length > 1 && /[.,;:!?)]$/.test(url)) {
+      url = url.slice(0, -1);
+    }
+    parts.push({ kind: 'url', value: url });
+    cursor = m.index + url.length;
+  }
+  if (cursor < text.length) parts.push({ kind: 'text', value: text.slice(cursor) });
+
+  return (
+    <>
+      {parts.map((p, i) =>
+        p.kind === 'text' ? <span key={i}>{p.value}</span> : <UrlBadge key={i} url={p.value} />,
+      )}
+    </>
+  );
+}
+
+function UrlBadge({ url }: { url: string }) {
+  let host: string | null = null;
+  let path = '';
+  try {
+    const u = new URL(url);
+    host = u.hostname.replace(/^www\./, '');
+    path = u.pathname + (u.search ? '?…' : '');
+    if (path.length > 28) path = path.slice(0, 26) + '…';
+    if (path === '/') path = '';
+  } catch {
+    /* leave host null */
+  }
+  const favicon = host
+    ? `https://www.google.com/s2/favicons?domain=${host}&sz=32`
+    : null;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noreferrer"
+      title={url}
+      className="mx-0.5 inline-flex items-center gap-1.5 rounded-full border border-neutral-700 bg-neutral-900/70 px-2 py-0.5 align-baseline text-[12px] text-neutral-200 transition-colors hover:border-accent hover:text-accent"
+    >
+      {favicon && (
+        <img
+          src={favicon}
+          alt=""
+          className="h-3.5 w-3.5 rounded-sm"
+          onError={(e) => {
+            (e.currentTarget as HTMLImageElement).style.display = 'none';
+          }}
+        />
+      )}
+      <span className="font-medium">{host ?? 'link'}</span>
+      {path && <span className="max-w-[160px] truncate text-[11px] text-neutral-500">{path}</span>}
+      <span className="text-[10px] text-neutral-500">↗</span>
+    </a>
+  );
+}
+
 export default function MemoryPreviewModal({ input, onClose }: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -203,7 +276,7 @@ export default function MemoryPreviewModal({ input, onClose }: Props) {
 
           {bodyText ? (
             <div className="whitespace-pre-line break-words text-[14px] leading-relaxed text-neutral-200">
-              {bodyText}
+              <BodyWithLinkBadges text={bodyText} />
             </div>
           ) : (
             <p className="text-sm italic text-neutral-500">No body content captured.</p>
