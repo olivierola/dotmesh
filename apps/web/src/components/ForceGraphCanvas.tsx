@@ -378,6 +378,25 @@ export default function ForceGraphCanvas({
 /**
  * Convert MockNode/MockEdge into the canvas shape.
  */
+/** Extra hub layer: a single central hub linked to N child sub-hubs, each
+ *  of which is linked to a set of node ids. Used by the Graph page to
+ *  build a "Me" hub connected to per-collection sub-hubs that gather their
+ *  member memories. Sub-hubs come on top of the existing per-site hubs
+ *  produced from `hubMembers`. */
+export interface ExtraHubLayer {
+  centerId: string;
+  centerLabel: string;
+  centerColor: string;
+  centerSize?: number;
+  subHubs: Array<{
+    id: string;
+    label: string;
+    color: string;
+    icon?: string | null;
+    members: string[];
+  }>;
+}
+
 export function buildCanvasData(opts: {
   nodes: MockNode[];
   edges: MockEdge[];
@@ -388,6 +407,7 @@ export function buildCanvasData(opts: {
   pickNodeColor: (n: MockNode) => string;
   pickNodeShape: (n: MockNode) => CanvasNode['shape'];
   shortLabel: (n: MockNode) => string;
+  extraHubs?: ExtraHubLayer | null;
 }): { nodes: CanvasNode[]; links: CanvasLink[]; membersByHub: Map<string, string[]> } {
   const canvasNodes: CanvasNode[] = [];
   const canvasLinks: CanvasLink[] = [];
@@ -417,6 +437,59 @@ export function buildCanvasData(opts: {
         style: 'dashed',
         isHubEdge: true,
       });
+    }
+  }
+
+  // ---- Extra hub layer: "Me" + per-collection sub-hubs ----
+  if (opts.extraHubs) {
+    const { centerId, centerLabel, centerColor, centerSize, subHubs } = opts.extraHubs;
+    canvasNodes.push({
+      id: centerId,
+      label: centerLabel,
+      color: centerColor,
+      size: centerSize ?? 60,
+      isHub: true,
+      shape: 'circle',
+    });
+    membersByHub.set(centerId, subHubs.map((s) => s.id));
+
+    for (const sub of subHubs) {
+      canvasNodes.push({
+        id: sub.id,
+        label: sub.icon ? `${sub.icon} ${sub.label}` : sub.label,
+        color: sub.color,
+        size: Math.max(8, sub.members.length),
+        isHub: true,
+        shape: 'hex',
+      });
+      // Center → sub-hub link
+      canvasLinks.push({
+        id: `${centerId}->${sub.id}`,
+        source: centerId,
+        target: sub.id,
+        relation: 'me_to_collection',
+        color: centerColor,
+        width: 1.5,
+        style: 'solid',
+        isHubEdge: true,
+      });
+      // Sub-hub → each member memory
+      const ownedMembers: string[] = [];
+      for (const mid of sub.members) {
+        if (!nodeIds.has(mid)) continue;
+        ownedMembers.push(mid);
+        canvasLinks.push({
+          id: `${sub.id}->${mid}`,
+          source: sub.id,
+          target: mid,
+          relation: 'collection_member',
+          color: sub.color + '55',
+          width: 0.5,
+          style: 'dashed',
+          isHubEdge: true,
+        });
+      }
+      membersByHub.set(sub.id, ownedMembers);
     }
   }
 
@@ -460,6 +533,7 @@ function edgeColor(rel: string): string {
     case 'contradicts':     return '#f87171';
     case 'supersedes':      return '#34d399';
     case 'user_linked':     return '#f5b301';
+    case 'note_link':       return '#f5b301';
     default:                return '#737373';
   }
 }
@@ -468,11 +542,13 @@ function edgeWidth(rel: string, confidence: number): number {
   const base = Math.max(0.4, Math.min(2.2, confidence * 2));
   if (rel === 'belongs_to_page' || rel === 'navigated_from') return base + 0.4;
   if (rel === 'same_session') return 0.4;
+  if (rel === 'note_link') return Math.max(1.8, base + 0.8);
   return base;
 }
 
 function edgeStyle(rel: string): CanvasLink['style'] {
   if (rel === 'same_session') return 'dotted';
   if (rel === 'navigated_from' || rel === 'cites' || rel === 'contradicts') return 'dashed';
+  if (rel === 'note_link') return 'solid';
   return 'solid';
 }

@@ -207,19 +207,34 @@ Deno.serve(async (req) => {
 
       const service = createServiceClient();
       const summary = parsed.data.title.slice(0, 200);
+      // content has a NOT-EMPTY CHECK constraint; use the title as content
+      // when the body is empty so an Untitled note can still be created.
+      const content =
+        parsed.data.content && parsed.data.content.length > 0
+          ? parsed.data.content
+          : parsed.data.title;
+      // fingerprint is NOT NULL; for manual notes we just derive a stable
+      // random string — there's no dedup story for handwritten notes.
+      const fingerprint = `note:${crypto.randomUUID()}`;
+
       const insertRes = await service
         .from('context_nodes')
         .insert({
           user_id: userId,
           source: 'manual_note',
-          node_type: 'note',
-          content: parsed.data.content,
+          content,
           summary,
           tags: ['note'],
           score: 1.0,
+          fingerprint,
           metadata: {
             note_title: parsed.data.title,
             note_html: parsed.data.html ?? null,
+            // Hint the generated node_type column — 'note' isn't in its
+            // whitelist so the column will resolve to NULL, but we keep
+            // the hint here for our own filtering in the API.
+            is_manual_note: true,
+            extracted: { node_type: 'note', title: parsed.data.title },
           },
         })
         .select('id')
@@ -227,7 +242,7 @@ Deno.serve(async (req) => {
       if (insertRes.error) return errorResponse('insert_failed', 500, insertRes.error);
 
       const noteId = insertRes.data.id as string;
-      const { created } = await syncWikiLinks(service, userId, noteId, parsed.data.content);
+      const { created } = await syncWikiLinks(service, userId, noteId, content);
       return jsonResponse({ note: { id: noteId }, wiki_links_created: created }, 201);
     }
 
@@ -258,7 +273,13 @@ Deno.serve(async (req) => {
         updated_at: new Date().toISOString(),
       };
       if (parsed.data.title !== undefined) updates.summary = parsed.data.title.slice(0, 200);
-      if (parsed.data.content !== undefined) updates.content = parsed.data.content;
+      if (parsed.data.content !== undefined) {
+        // Respect the NOT-EMPTY CHECK: fall back to the (new or stored) title.
+        const fallback =
+          parsed.data.title ??
+          ((oldMd.note_title as string | undefined) ?? '(untitled)');
+        updates.content = parsed.data.content.length > 0 ? parsed.data.content : fallback;
+      }
 
       const { error } = await service
         .from('context_nodes')

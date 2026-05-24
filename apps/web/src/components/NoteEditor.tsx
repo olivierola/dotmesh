@@ -13,7 +13,7 @@
  * HTML (cached in metadata.note_html for faster previews).
  */
 
-import { useEditor, EditorContent } from '@tiptap/react';
+import { useEditor, EditorContent, type Editor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import Link from '@tiptap/extension-link';
@@ -140,6 +140,7 @@ export default function NoteEditor({ initialContent, onChange, placeholder }: Pr
 
   return (
     <div className="note-editor">
+      {editor && <Toolbar editor={editor} />}
       <EditorContent editor={editor} />
       <style>{`
         .tiptap-note p.is-editor-empty:first-child::before {
@@ -177,6 +178,199 @@ export default function NoteEditor({ initialContent, onChange, placeholder }: Pr
         .tiptap-note a { color: #f5b301; text-decoration: underline; }
       `}</style>
     </div>
+  );
+}
+
+/* ------------------------------------------------------------- */
+/*                          Toolbar                               */
+/* ------------------------------------------------------------- */
+
+function Toolbar({ editor }: { editor: Editor }) {
+  const insertWikiLink = () => {
+    const title = window.prompt('Link to which note? (type the exact title)');
+    if (!title?.trim()) return;
+    editor.chain().focus().insertContent(`[[${title.trim()}]] `).run();
+  };
+
+  const promptLink = () => {
+    const url = window.prompt('URL');
+    if (!url?.trim()) return;
+    editor.chain().focus().extendMarkRange('link').setLink({ href: url.trim() }).run();
+  };
+
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-0.5 rounded-md border border-neutral-800 bg-neutral-900/60 p-1 text-xs">
+      <ToolGroup>
+        <ToolBtn
+          active={editor.isActive('heading', { level: 1 })}
+          onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
+          title="Heading 1"
+        >
+          H1
+        </ToolBtn>
+        <ToolBtn
+          active={editor.isActive('heading', { level: 2 })}
+          onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+          title="Heading 2"
+        >
+          H2
+        </ToolBtn>
+        <ToolBtn
+          active={editor.isActive('heading', { level: 3 })}
+          onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
+          title="Heading 3"
+        >
+          H3
+        </ToolBtn>
+        <ToolBtn
+          active={editor.isActive('paragraph') && !editor.isActive('heading')}
+          onClick={() => editor.chain().focus().setParagraph().run()}
+          title="Paragraph"
+        >
+          ¶
+        </ToolBtn>
+      </ToolGroup>
+
+      <Divider />
+
+      <ToolGroup>
+        <ToolBtn
+          active={editor.isActive('bold')}
+          onClick={() => editor.chain().focus().toggleBold().run()}
+          title="Bold (Ctrl+B)"
+        >
+          <strong>B</strong>
+        </ToolBtn>
+        <ToolBtn
+          active={editor.isActive('italic')}
+          onClick={() => editor.chain().focus().toggleItalic().run()}
+          title="Italic (Ctrl+I)"
+        >
+          <em>I</em>
+        </ToolBtn>
+        <ToolBtn
+          active={editor.isActive('strike')}
+          onClick={() => editor.chain().focus().toggleStrike().run()}
+          title="Strikethrough"
+        >
+          <s>S</s>
+        </ToolBtn>
+        <ToolBtn
+          active={editor.isActive('code')}
+          onClick={() => editor.chain().focus().toggleCode().run()}
+          title="Inline code"
+        >
+          {'</>'}
+        </ToolBtn>
+      </ToolGroup>
+
+      <Divider />
+
+      <ToolGroup>
+        <ToolBtn
+          active={editor.isActive('bulletList')}
+          onClick={() => editor.chain().focus().toggleBulletList().run()}
+          title="Bullet list"
+        >
+          •
+        </ToolBtn>
+        <ToolBtn
+          active={editor.isActive('orderedList')}
+          onClick={() => editor.chain().focus().toggleOrderedList().run()}
+          title="Numbered list"
+        >
+          1.
+        </ToolBtn>
+        <ToolBtn
+          active={editor.isActive('blockquote')}
+          onClick={() => editor.chain().focus().toggleBlockquote().run()}
+          title="Quote"
+        >
+          ❝
+        </ToolBtn>
+        <ToolBtn
+          active={editor.isActive('codeBlock')}
+          onClick={() => editor.chain().focus().toggleCodeBlock().run()}
+          title="Code block"
+        >
+          {'{ }'}
+        </ToolBtn>
+      </ToolGroup>
+
+      <Divider />
+
+      <ToolGroup>
+        <ToolBtn onClick={promptLink} title="Insert URL link" active={editor.isActive('link')}>
+          🔗
+        </ToolBtn>
+        <ToolBtn onClick={insertWikiLink} title="Link another note ([[title]])">
+          [[ ]]
+        </ToolBtn>
+        <ToolBtn
+          onClick={() => editor.chain().focus().setHorizontalRule().run()}
+          title="Divider"
+        >
+          —
+        </ToolBtn>
+      </ToolGroup>
+
+      <Divider />
+
+      <ToolGroup>
+        <ToolBtn
+          onClick={() => editor.chain().focus().undo().run()}
+          disabled={!editor.can().undo()}
+          title="Undo"
+        >
+          ↶
+        </ToolBtn>
+        <ToolBtn
+          onClick={() => editor.chain().focus().redo().run()}
+          disabled={!editor.can().redo()}
+          title="Redo"
+        >
+          ↷
+        </ToolBtn>
+      </ToolGroup>
+    </div>
+  );
+}
+
+function ToolGroup({ children }: { children: React.ReactNode }) {
+  return <div className="flex items-center gap-0.5">{children}</div>;
+}
+
+function Divider() {
+  return <div className="mx-1 h-5 w-px bg-neutral-800" />;
+}
+
+function ToolBtn({
+  children,
+  onClick,
+  title,
+  active,
+  disabled,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  title: string;
+  active?: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      disabled={disabled}
+      className={`grid h-7 min-w-[28px] place-items-center rounded px-1.5 text-xs transition-colors disabled:opacity-40 ${
+        active
+          ? 'bg-accent/20 text-accent'
+          : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100'
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 
