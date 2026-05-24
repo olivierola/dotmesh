@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { formatDistanceToNow } from 'date-fns';
 import {
@@ -505,6 +505,129 @@ function EmptyState({ onPick }: { onPick: (q: string) => void }) {
   );
 }
 
+/* ------------------------------------------------------------- */
+/*           Render assistant prose with [N] → cite badges        */
+/* ------------------------------------------------------------- */
+
+const CITE_RE = /\[(\d{1,3})\](?:\s*\[(\d{1,3})\])*/g;
+
+function CitedContent({ content, hits }: { content: string; hits: ChatHit[] }) {
+  const [openHit, setOpenHit] = useState<ChatHit | null>(null);
+  const hitByIndex = useMemo(() => {
+    const m = new Map<number, ChatHit>();
+    for (const h of hits) m.set(h.index, h);
+    return m;
+  }, [hits]);
+
+  // Walk the content, splitting on [N] runs. Inside a run, every [N]
+  // becomes its own badge.
+  const parts: Array<{ kind: 'text'; value: string } | { kind: 'cite'; n: number }> = [];
+  let cursor = 0;
+  let m: RegExpExecArray | null;
+  // Reset state on every render to keep parsing deterministic.
+  CITE_RE.lastIndex = 0;
+  while ((m = CITE_RE.exec(content))) {
+    if (m.index > cursor) {
+      parts.push({ kind: 'text', value: content.slice(cursor, m.index) });
+    }
+    // Pull every [\d+] inside this match
+    const runRe = /\[(\d{1,3})\]/g;
+    let inner: RegExpExecArray | null;
+    while ((inner = runRe.exec(m[0]))) {
+      const n = parseInt(inner[1]!, 10);
+      parts.push({ kind: 'cite', n });
+    }
+    cursor = m.index + m[0].length;
+  }
+  if (cursor < content.length) {
+    parts.push({ kind: 'text', value: content.slice(cursor) });
+  }
+
+  return (
+    <>
+      <span className="whitespace-pre-wrap">
+        {parts.map((p, i) => {
+          if (p.kind === 'text') return <span key={i}>{p.value}</span>;
+          const hit = hitByIndex.get(p.n);
+          return (
+            <button
+              key={i}
+              type="button"
+              onClick={() => hit && setOpenHit(hit)}
+              disabled={!hit}
+              className={`mx-0.5 inline-flex items-center justify-center rounded-full border px-1.5 text-[10px] font-semibold align-text-bottom leading-none h-[18px] min-w-[18px] transition-colors ${
+                hit
+                  ? 'border-accent/40 bg-accent/15 text-accent hover:bg-accent/25 cursor-pointer'
+                  : 'border-neutral-800 bg-neutral-900 text-neutral-500 cursor-default'
+              }`}
+              title={hit ? `Open source ${p.n}` : `Source ${p.n} not available`}
+            >
+              {p.n}
+            </button>
+          );
+        })}
+      </span>
+      {openHit && <SourceModal hit={openHit} onClose={() => setOpenHit(null)} />}
+    </>
+  );
+}
+
+function SourceModal({ hit, onClose }: { hit: ChatHit; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-xl overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950 shadow-2xl"
+      >
+        <header className="flex items-center justify-between border-b border-neutral-900 px-5 py-3">
+          <div className="flex items-center gap-2">
+            <span className="grid h-6 w-6 place-items-center rounded-full border border-accent/40 bg-accent/15 text-[10px] font-semibold text-accent">
+              {hit.index}
+            </span>
+            <h3 className="text-sm font-semibold text-neutral-100">Source</h3>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-neutral-500 hover:text-neutral-200"
+            aria-label="Close"
+          >
+            ✕
+          </button>
+        </header>
+        <div className="max-h-[70vh] overflow-y-auto px-5 py-4">
+          <p className="whitespace-pre-line text-[14px] leading-relaxed text-neutral-200">
+            {hit.summary}
+          </p>
+          <div className="mt-4 border-t border-neutral-900 pt-3 text-[11px] text-neutral-500">
+            <div className="font-medium text-neutral-400">{hit.source}</div>
+            {hit.source_url && (
+              <a
+                href={hit.source_url}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-1 inline-block break-all text-accent hover:underline"
+              >
+                ↗ {hit.source_url}
+              </a>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MessageBubble({ msg }: { msg: UiMessage }) {
   if (msg.role === 'user') {
     return (
@@ -529,8 +652,8 @@ function MessageBubble({ msg }: { msg: UiMessage }) {
           </div>
           <div className="min-w-0 flex-1 space-y-2 pt-0.5">
             {msg.agent_used && <AgentBadge agent={msg.agent_used} />}
-            <div className="whitespace-pre-wrap text-[15px] leading-relaxed text-neutral-100">
-              {msg.content}
+            <div className="text-[15px] leading-relaxed text-neutral-100">
+              <CitedContent content={msg.content} hits={msg.hits ?? []} />
               {msg.streaming && (
                 <span className="ml-1 inline-block h-4 w-[2px] translate-y-0.5 animate-pulse bg-neutral-400 align-middle" />
               )}
