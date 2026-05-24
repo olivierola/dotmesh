@@ -57,6 +57,39 @@ export default function SettingsPage() {
     }
   };
 
+  const [clustering, setClustering] = useState(false);
+  const recluster = async () => {
+    if (
+      !confirm(
+        'Re-cluster your memories into ~8 thematic groups via AI? Replaces previous 🎯 auto-clusters.',
+      )
+    ) {
+      return;
+    }
+    setClustering(true);
+    setMessage(null);
+    try {
+      const r = await api.clusterNodes(8);
+      if (!r.ok) {
+        setMessage({
+          kind: 'error',
+          text: r.reason === 'not_enough_embedded_nodes'
+            ? `Need at least ${r.needed} embedded memories — only ${r.node_count} are ready.`
+            : 'Clustering failed.',
+        });
+      } else {
+        setMessage({
+          kind: 'ok',
+          text: `Built ${r.clusters_created} clusters from ${r.node_count} memories (wiped ${r.old_wiped} old). Check Collections.`,
+        });
+      }
+    } catch (e) {
+      setMessage({ kind: 'error', text: (e as Error).message });
+    } finally {
+      setClustering(false);
+    }
+  };
+
   const [cleaning, setCleaning] = useState(false);
   const cleanupTitles = async () => {
     if (!confirm('Re-run LLM cleanup on up to 100 memories with raw URLs / missing titles?')) return;
@@ -257,6 +290,14 @@ export default function SettingsPage() {
             title="Re-generate titles, summaries and embeddings for memories that look raw"
           >
             {cleaning ? 'Cleaning…' : '✨ Clean up memory titles'}
+          </button>
+          <button
+            onClick={recluster}
+            disabled={clustering}
+            className="rounded border border-neutral-700 px-3 py-1.5 text-xs text-neutral-200 hover:border-neutral-600 disabled:opacity-50"
+            title="Group your memories into thematic clusters via k-means + LLM labels"
+          >
+            {clustering ? 'Clustering…' : '🎯 Re-cluster memories by theme'}
           </button>
           <button
             onClick={exportData}

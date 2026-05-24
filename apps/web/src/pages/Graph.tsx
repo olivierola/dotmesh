@@ -7,6 +7,7 @@ import { Skeleton } from '@/components/Skeleton';
 import ForceGraphCanvas, {
   buildCanvasData,
   type CanvasNode,
+  type ExtraHubLayer,
 } from '@/components/ForceGraphCanvas';
 
 const FALLBACK_PALETTE = [
@@ -30,7 +31,17 @@ const TYPE_COLORS: Record<string, string> = {
   quote:  '#facc15', // yellow
   page:   '#34d399', // green
   action: '#e879f9', // magenta
+  note:   '#f5b301', // accent — user-authored manual notes
 };
+
+/** True for context_nodes that came from the manual /notes editor. */
+function isManualNote(n: MockNode): boolean {
+  return (
+    (n as unknown as { source?: string }).source === 'manual_note' ||
+    n.metadata?.is_manual_note === true ||
+    (n.metadata?.extracted as { node_type?: string } | undefined)?.node_type === 'note'
+  );
+}
 
 const RELATION_COLOR: Record<string, string> = {
   belongs_to_page: '#a78bfa',
@@ -45,6 +56,7 @@ const RELATION_COLOR: Record<string, string> = {
   explicit: '#e5e5e5',
   temporal: '#52525b',
   user_linked: '#f5b301',
+  note_link: '#f5b301',
 };
 
 const TYPE_LABELS: Record<string, string> = {
@@ -56,6 +68,7 @@ const TYPE_LABELS: Record<string, string> = {
   quote: 'Quote',
   page: 'Page',
   action: 'Action',
+  note: 'Note',
 };
 
 function hashIndex(id: string, mod: number): number {
@@ -71,6 +84,7 @@ function colorForCollection(c: GraphCollection): string {
 }
 
 function effectiveNodeType(node: MockNode): string {
+  if (isManualNote(node)) return 'note';
   return (
     node.node_type ??
     node.metadata?.extracted?.node_type ??
@@ -293,6 +307,38 @@ export default function GraphPage() {
       arr.push(n.id);
       hubMembers.set(k, arr);
     }
+
+    // Build the "Me + per-collection sub-hubs" layer. We gather the member
+    // node ids for each collection from collection_ids on each node.
+    const collectionMembers = new Map<string, string[]>();
+    for (const n of data.nodes) {
+      for (const cid of n.collection_ids ?? []) {
+        const arr = collectionMembers.get(cid) ?? [];
+        arr.push(n.id);
+        collectionMembers.set(cid, arr);
+      }
+    }
+    // Only show sub-hubs for collections that actually have members.
+    const subHubs = (data.collections ?? [])
+      .filter((c) => (collectionMembers.get(c.id)?.length ?? 0) > 0)
+      .map((c) => ({
+        id: `coll:${c.id}`,
+        label: c.name,
+        color: colorForCollection(c),
+        icon: c.icon ?? null,
+        members: collectionMembers.get(c.id) ?? [],
+      }));
+
+    const extraHubs: ExtraHubLayer | null = subHubs.length > 0
+      ? {
+          centerId: 'me:hub',
+          centerLabel: 'You',
+          centerColor: HUB_COLOR,
+          centerSize: Math.max(60, subHubs.length * 6),
+          subHubs,
+        }
+      : null;
+
     return buildCanvasData({
       nodes: data.nodes,
       edges: data.edges,
@@ -300,11 +346,15 @@ export default function GraphPage() {
       hubLabel,
       hubKey,
       hubColor: HUB_COLOR,
+      extraHubs,
       // Initial colour: 'type' mode. Subsequent changes mutate `color` on
       // the existing node objects (see effect below) without recreating
       // anything, so positions survive.
       pickNodeColor: (n) => pickColor(n, 'type', collectionById),
       pickNodeShape: (n) => {
+        // Manual notes get a distinct square shape with accent color so
+        // they stand out visually from auto-captured memories.
+        if (isManualNote(n)) return 'square';
         const t = effectiveNodeType(n);
         if (t === 'image') return 'square';
         if (t === 'video') return 'square';
@@ -548,6 +598,7 @@ function Legend({
               ['extends', 'extends', '#84cc16'],
               ['cites', 'cites', '#facc15'],
               ['contradicts', 'contradicts', '#f87171'],
+              ['note_link', 'note ↔ note', '#f5b301'],
             ] as const
           ).map(([k, label, color]) => (
             <li key={k} className="flex items-center gap-2 text-neutral-400">

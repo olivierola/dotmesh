@@ -803,6 +803,24 @@ export const api = {
    * raw URL / "[Page] …" placeholder. Idempotent — call again to process the
    * next batch.
    */
+  /**
+   * Re-cluster the user's nodes into thematic groups via k-means on
+   * embeddings. Wipes any previous 🎯-cluster collections and creates a
+   * fresh set with LLM-generated labels. Default k=8.
+   */
+  async clusterNodes(k = 8): Promise<{
+    ok: boolean;
+    k?: number;
+    node_count?: number;
+    clusters_created?: number;
+    old_wiped?: number;
+    clusters?: Array<{ id: string; name: string; size: number }>;
+    reason?: string;
+    needed?: number;
+  }> {
+    return realFetch(`/cluster-nodes?k=${k}`, { method: 'POST' });
+  },
+
   async reprocessAll(): Promise<{
     ok: boolean;
     scanned: number;
