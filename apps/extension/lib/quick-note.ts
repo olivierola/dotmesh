@@ -59,12 +59,13 @@ function buildShadow(): { host: HTMLDivElement; shadow: ShadowRoot } {
         position: absolute;
         right: 0;
         bottom: 56px;
-        width: 320px;
-        background: #0a0a0a;
+        width: 480px;
+        max-width: calc(100vw - 40px);
+        background: #141414;
         color: #e5e5e5;
         border: 1px solid #2a2a2a;
         border-radius: 12px;
-        padding: 14px;
+        padding: 16px;
         box-shadow: 0 20px 50px rgba(0,0,0,0.6);
         display: none;
         animation: meshPop 140ms ease both;
@@ -76,36 +77,44 @@ function buildShadow(): { host: HTMLDivElement; shadow: ShadowRoot } {
       }
       .panel header {
         display: flex; justify-content: space-between; align-items: center;
-        margin-bottom: 10px;
+        margin-bottom: 12px;
       }
       .panel header .title { font-size: 12px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: #a3a3a3; }
       .panel header button.close {
-        background: transparent; border: 0; color: #737373; font-size: 16px; cursor: pointer; padding: 0 4px; line-height: 1;
+        background: transparent; border: 0; color: #737373; font-size: 18px; cursor: pointer; padding: 0 4px; line-height: 1;
       }
       .panel header button.close:hover { color: #d4d4d4; }
-      textarea {
+      .editor {
         width: 100%;
-        height: 110px;
-        padding: 10px;
+        min-height: 180px;
+        max-height: 360px;
+        overflow-y: auto;
+        padding: 12px 14px;
         background: #141414;
-        border: 1px solid #1f1f1f;
+        border: 1px solid #2a2a2a;
         border-radius: 8px;
         color: #e5e5e5;
         font: inherit;
-        font-size: 13px;
-        line-height: 1.5;
-        resize: vertical;
+        font-size: 14px;
+        line-height: 1.55;
         outline: none;
         transition: border-color 120ms ease;
+        white-space: pre-wrap;
+        word-break: break-word;
+        -webkit-user-modify: read-write-plaintext-only;
       }
-      textarea:focus { border-color: #3a3a3a; }
-      textarea::placeholder { color: #555; }
+      .editor:focus { border-color: #3a3a3a; }
+      .editor[data-empty="true"]::before {
+        content: attr(data-placeholder);
+        color: #555;
+        pointer-events: none;
+      }
       .actions {
-        display: flex; gap: 6px; justify-content: flex-end; margin-top: 10px;
+        display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px;
       }
       .actions button {
-        padding: 6px 12px; border-radius: 6px; border: 1px solid #2a2a2a;
-        background: transparent; color: #d4d4d4; cursor: pointer; font-size: 12px;
+        padding: 8px 14px; border-radius: 6px; border: 1px solid #2a2a2a;
+        background: transparent; color: #d4d4d4; cursor: pointer; font-size: 13px;
         transition: background 120ms ease, border-color 120ms ease;
       }
       .actions button:hover { border-color: #444; }
@@ -114,7 +123,7 @@ function buildShadow(): { host: HTMLDivElement; shadow: ShadowRoot } {
       }
       .actions button.primary:hover { background: #ffbe10; }
       .actions button:disabled { opacity: 0.5; cursor: not-allowed; }
-      .status { font-size: 11px; color: #737373; margin-top: 6px; min-height: 14px; }
+      .status { font-size: 11px; color: #737373; margin-top: 8px; min-height: 14px; }
       .status.ok    { color: #34d399; }
       .status.err   { color: #f87171; }
     </style>
@@ -124,7 +133,16 @@ function buildShadow(): { host: HTMLDivElement; shadow: ShadowRoot } {
         <span class="title">📝 Quick note</span>
         <button class="close" data-close>✕</button>
       </header>
-      <textarea data-input placeholder="What do you want to remember?"></textarea>
+      <div
+        class="editor"
+        data-input
+        contenteditable="true"
+        data-empty="true"
+        data-placeholder="What do you want to remember?"
+        role="textbox"
+        aria-label="Quick note"
+        aria-multiline="true"
+      ></div>
       <div class="status" data-status></div>
       <div class="actions">
         <button data-cancel>Cancel</button>
@@ -145,15 +163,45 @@ export function installQuickNote(): void {
   const { host, shadow } = buildShadow();
   const fab = shadow.querySelector<HTMLButtonElement>('[data-fab]')!;
   const panel = shadow.querySelector<HTMLDivElement>('[data-panel]')!;
-  const input = shadow.querySelector<HTMLTextAreaElement>('[data-input]')!;
+  const input = shadow.querySelector<HTMLDivElement>('[data-input]')!;
   const saveBtn = shadow.querySelector<HTMLButtonElement>('[data-save]')!;
   const cancelBtn = shadow.querySelector<HTMLButtonElement>('[data-cancel]')!;
   const closeBtn = shadow.querySelector<HTMLButtonElement>('[data-close]')!;
   const status = shadow.querySelector<HTMLDivElement>('[data-status]')!;
 
+  // Helpers for the contenteditable div.
+  function getText(): string {
+    return (input.innerText ?? '').replace(/ /g, ' ').trim();
+  }
+  function setText(v: string): void {
+    input.innerText = v;
+    refreshEmptyState();
+  }
+  function refreshEmptyState(): void {
+    input.dataset.empty = (input.innerText ?? '').trim().length === 0 ? 'true' : 'false';
+  }
+  input.addEventListener('input', refreshEmptyState);
+  // Strip formatting on paste so every line stays in the editor's uniform color.
+  input.addEventListener('paste', (e) => {
+    const ev = e as ClipboardEvent;
+    ev.preventDefault();
+    const text = ev.clipboardData?.getData('text/plain') ?? '';
+    // Use insertText which respects undo and the current selection.
+    document.execCommand('insertText', false, text);
+  });
+
   function open(): void {
     panel.classList.add('open');
-    setTimeout(() => input.focus(), 50);
+    setTimeout(() => {
+      input.focus();
+      // Place caret at the end if there is content already.
+      const range = document.createRange();
+      range.selectNodeContents(input);
+      range.collapse(false);
+      const sel = (input.ownerDocument?.defaultView ?? window).getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    }, 50);
   }
   function close(): void {
     panel.classList.remove('open');
@@ -167,7 +215,7 @@ export function installQuickNote(): void {
   }
 
   async function save(): Promise<void> {
-    const text = input.value.trim();
+    const text = getText();
     if (text.length < 2) return;
     if (!runtimeIsAlive()) {
       setStatus('Mesh isn\'t available — refresh the tab.', 'err');
@@ -198,7 +246,7 @@ export function installQuickNote(): void {
     saveBtn.disabled = false;
     if (response?.ok || response?.decision === 'queued') {
       setStatus('Saved to Mesh ✓', 'ok');
-      input.value = '';
+      setText('');
       setTimeout(close, 900);
     } else {
       setStatus(
