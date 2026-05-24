@@ -1,24 +1,32 @@
 /**
- * Force-directed graph canvas backed by react-force-graph-2d.
+ * Force-directed graph canvas — custom HTMLCanvasElement renderer.
  *
- * Wraps the bare ForceGraph2D and adds:
- *   - automatic container sizing,
- *   - rigid hub group-drag (members move with the dragged hub),
- *   - lineage dimming (nodes & links not in keep set drawn faded),
- *   - selection ring, type-aware node rendering.
+ * Replaces react-force-graph-2d which had a brittle desktop hit-test
+ * (shadow-canvas) where many nodes ended up unpickable. Now we own the
+ * pipeline end-to-end:
  *
- * Kept deliberately small so the simulation defaults of d3-force kick in
- * and we don't trip over edge cases (e.g. all nodes stuck at the centre).
+ *   - d3-force does the physics simulation (centre + many-body + link).
+ *   - Rendering is a single canvas, redrawn each tick + each interaction.
+ *   - Hit-test is a plain in-script geometric check (distance-to-node)
+ *     run on every mousemove/mousedown. Zero shadow buffers, no pixel ID
+ *     trickery — every node is always pickable.
+ *   - Pan & zoom: standard wheel-to-zoom + drag-empty-area-to-pan, both
+ *     mapped through a single transform applied to all coordinates.
+ *   - Dragging a hub also drags all its members rigidly (translation).
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import ForceGraph2D from 'react-force-graph-2d';
+import { useEffect, useRef, useState } from 'react';
+import {
+  forceSimulation,
+  forceLink,
+  forceManyBody,
+  forceCenter,
+  forceCollide,
+  type Simulation,
+  type SimulationNodeDatum,
+  type SimulationLinkDatum,
+} from 'd3-force';
 import type { MockNode, MockEdge } from '@/lib/mock';
-
-// react-force-graph's TS typings disagree with our richer node shape;
-// using `any` at the boundary keeps the runtime intact without leaking.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const FG: any = ForceGraph2D;
 
 export interface CanvasNode {
   id: string;
@@ -158,6 +166,17 @@ function drawNode(
   ctx.stroke();
 }
 
+/** d3-force friendly view of our CanvasNode (it mutates x/y/vx/vy). */
+type SimNode = CanvasNode & SimulationNodeDatum;
+type SimLink = SimulationLinkDatum<SimNode> & {
+  id: string;
+  relation: string;
+  color: string;
+  width: number;
+  style: 'solid' | 'dashed' | 'dotted';
+  isHubEdge: boolean;
+};
+
 export default function ForceGraphCanvas({
   nodes,
   links,
@@ -167,14 +186,28 @@ export default function ForceGraphCanvas({
   onBackgroundClick,
   selectedId,
 }: ForceGraphCanvasProps) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const fgRef = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
 
-  // Measure the container so the canvas matches it. We start at 0,0 so
-  // the canvas stays unmounted until we know its real size — prevents the
-  // simulation from initialising at the wrong aspect ratio.
+  // Live refs the render/hit-test loops read — using refs avoids React
+  // re-renders on every tick.
+  const transformRef = useRef({ x: 0, y: 0, k: 1 });
+  const hoveredRef = useRef<string | null>(null);
+  const simRef = useRef<Simulation<SimNode, SimLink> | null>(null);
+  const nodesRef = useRef<SimNode[]>([]);
+  const linksRef = useRef<SimLink[]>([]);
+  const lineageKeepRef = useRef<Set<string> | null>(lineageKeep ?? null);
+  const selectedIdRef = useRef<string | null>(selectedId ?? null);
+
+  useEffect(() => {
+    lineageKeepRef.current = lineageKeep ?? null;
+  }, [lineageKeep]);
+  useEffect(() => {
+    selectedIdRef.current = selectedId ?? null;
+  }, [selectedId]);
+
+  // Measure the container so the canvas matches it.
   useEffect(() => {
     const update = () => {
       const r = containerRef.current?.getBoundingClientRect();
@@ -189,261 +222,435 @@ export default function ForceGraphCanvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Pass the exact arrays react-force-graph mutates. We deliberately do
-  // NOT recreate this object on every render (which would reset positions),
-  // and we accept the small staleness because the parent already memoises
-  // nodes/links per render.
+  // ---- Simulation + data wiring -----------------------------------------
   //
-  // We also seed initial x/y for hubs and their members so the very first
-  // paint already looks organised (hubs on a ring, members clustered
-  // around their hub). d3-force only seeds at the centre by default,
-  // which produces an explosion that takes many ticks to settle.
+  // We rebuild the simulation whenever the *dataset cardinality* changes.
+  // The simulation mutates the same SimNode objects we render, so positions
+  // survive across re-renders that only change `selectedId` / `lineageKeep`.
   useEffect(() => {
-    // Purge any stale fx/fy left over from previous renders or drag
-    // sessions. Without this, nodes that were pinned via a misclicked
-    // right-click or an interrupted drag stay rigid for the whole
-    // session — the user reports "some nodes are draggable, others
-    // are not" which is exactly this state.
-    for (const n of nodes) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const o = n as any;
-      delete o.fx;
-      delete o.fy;
+    if (!size.w || !size.h) return;
+
+    // Cast: d3-force adds vx/vy to nodes; that's compatible with our type.
+    const simNodes = nodes as SimNode[];
+    prepareNodesForCanvas(simNodes, membersByHub);
+
+    // Resolve link endpoints into node references (d3 wants objects).
+    const idToNode = new Map(simNodes.map((n) => [n.id, n]));
+    const simLinks: SimLink[] = [];
+    for (const l of links) {
+      const s = idToNode.get(l.source);
+      const t = idToNode.get(l.target);
+      if (!s || !t) continue;
+      simLinks.push({
+        ...l,
+        source: s,
+        target: t,
+      });
     }
 
-    const hubs = nodes.filter((n) => n.isHub);
-    const ringRadius = Math.max(220, hubs.length * 80);
-    hubs.forEach((hub, i) => {
-      if (typeof hub.x === 'number' && typeof hub.y === 'number') return;
-      const angle = (i / Math.max(hubs.length, 1)) * Math.PI * 2;
-      hub.x = Math.cos(angle) * ringRadius;
-      hub.y = Math.sin(angle) * ringRadius;
+    nodesRef.current = simNodes;
+    linksRef.current = simLinks;
+
+    const sim = forceSimulation<SimNode, SimLink>(simNodes)
+      .force(
+        'link',
+        forceLink<SimNode, SimLink>(simLinks)
+          .id((d) => d.id)
+          .distance((l) => (l.isHubEdge ? 120 : 80))
+          .strength(0.08),
+      )
+      .force('charge', forceManyBody<SimNode>().strength(-380).distanceMax(400))
+      .force('center', forceCenter(0, 0).strength(0.04))
+      .force(
+        'collide',
+        forceCollide<SimNode>().radius((n) => nodeRadius(n) + 4),
+      )
+      .alpha(0.6)
+      .alphaDecay(0.025);
+
+    simRef.current = sim;
+
+    // We don't redraw on every tick (would cost ~60 fps unnecessarily for
+    // bigger graphs) — instead we always redraw in our requestAnimationFrame
+    // loop installed below.
+    sim.on('tick', () => {
+      /* no-op — RAF handles render */
     });
-    // Cluster leaf nodes around their hub.
-    const hubById = new Map(hubs.map((h) => [h.id, h]));
-    if (membersByHub) {
-      for (const [hubId, memberIds] of membersByHub) {
-        const hub = hubById.get(hubId);
-        if (!hub) continue;
-        memberIds.forEach((mid, j) => {
-          const m = nodes.find((n) => n.id === mid);
-          if (!m || typeof m.x === 'number') return;
-          const a = (j / memberIds.length) * Math.PI * 2;
-          const r = 60 + Math.random() * 30;
-          m.x = (hub.x ?? 0) + Math.cos(a) * r;
-          m.y = (hub.y ?? 0) + Math.sin(a) * r;
-        });
-      }
-    }
-    // Any leftover node without coordinates (orphans, auto-created
-    // page nodes, anything not in a hub) — place them on an outer
-    // golden-spiral so their nodePointerAreaPaint hit-zone has a
-    // real position from frame 1. Without this, react-force-graph
-    // paints the pickability disc at (0,0) and the node is forever
-    // unclickable even after the physics simulation moves it.
-    let stray = 0;
-    for (const n of nodes) {
-      if (typeof n.x === 'number' && typeof n.y === 'number') continue;
-      const a = (stray++ * 137.5 * Math.PI) / 180;
-      const r = ringRadius * 1.4;
-      n.x = Math.cos(a) * r;
-      n.y = Math.sin(a) * r;
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes, membersByHub]);
 
-  const graphData = useMemo(() => {
-    prepareNodesForCanvas(nodes, membersByHub);
-    return { nodes, links };
-  }, [nodes, links, membersByHub]);
+    return () => {
+      sim.stop();
+      simRef.current = null;
+    };
+  }, [nodes, links, membersByHub, size.w, size.h]);
 
-  // Tune forces once the instance is ready.
-  // - Soft link force (low strength) so the user can stretch / pull edges
-  //   freely; they pop back gently rather than snapping back rigidly.
-  // - Strong charge so nodes naturally repel each other → less hairball.
+  // ---- Render loop ------------------------------------------------------
+
   useEffect(() => {
-    const fg = fgRef.current;
-    if (!fg) return;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const link: any = fg.d3Force('link');
-    link?.distance(90).strength(0.08);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const charge: any = fg.d3Force('charge');
-    charge?.strength(-380).distanceMax(400);
-    fg.d3ReheatSimulation?.();
+    if (!size.w || !size.h) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    canvas.width = Math.floor(size.w * dpr);
+    canvas.height = Math.floor(size.h * dpr);
+    canvas.style.width = `${size.w}px`;
+    canvas.style.height = `${size.h}px`;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    let rafId = 0;
+    const render = () => {
+      rafId = requestAnimationFrame(render);
+      const w = size.w;
+      const h = size.h;
+      ctx.save();
+      ctx.fillStyle = '#0a0a0a';
+      ctx.fillRect(0, 0, w, h);
+
+      // World transform: translate(centerX + tx, centerY + ty) then scale.
+      const t = transformRef.current;
+      ctx.translate(w / 2 + t.x, h / 2 + t.y);
+      ctx.scale(t.k, t.k);
+
+      const lineage = lineageKeepRef.current;
+
+      // Links
+      for (const l of linksRef.current) {
+        const s = l.source as SimNode;
+        const tg = l.target as SimNode;
+        if (!Number.isFinite(s.x) || !Number.isFinite(tg.x)) continue;
+        const dim = lineage ? !lineage.has(s.id) || !lineage.has(tg.id) : false;
+        const baseColor = l.color;
+        ctx.strokeStyle = dim ? baseColor + '22' : baseColor + 'cc';
+        ctx.lineWidth = l.width / Math.max(t.k, 0.4);
+        if (l.style === 'dashed') ctx.setLineDash([6, 4]);
+        else if (l.style === 'dotted') ctx.setLineDash([2, 4]);
+        else ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(s.x ?? 0, s.y ?? 0);
+        ctx.lineTo(tg.x ?? 0, tg.y ?? 0);
+        ctx.stroke();
+
+        // Arrow for non-hub edges
+        if (!l.isHubEdge && l.relation !== 'same_session') {
+          drawArrowHead(ctx, s, tg, l.color, t.k);
+        }
+      }
+      ctx.setLineDash([]);
+
+      // Nodes
+      for (const n of nodesRef.current) {
+        if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
+        const dimmed = lineage ? !lineage.has(n.id) : false;
+        const r = nodeRadius(n);
+        drawNode(ctx, n, r, dimmed);
+        // Selection ring
+        if (selectedIdRef.current === n.id) {
+          ctx.beginPath();
+          ctx.strokeStyle = '#f5b301';
+          ctx.lineWidth = 2 / t.k;
+          ctx.arc(n.x ?? 0, n.y ?? 0, r + 4, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        // Hover ring
+        if (hoveredRef.current === n.id && selectedIdRef.current !== n.id) {
+          ctx.beginPath();
+          ctx.strokeStyle = '#fde68a';
+          ctx.lineWidth = 1.5 / t.k;
+          ctx.arc(n.x ?? 0, n.y ?? 0, r + 3, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        // Label
+        if (!dimmed && (t.k > 1.2 || n.isHub)) {
+          const fontSize = (n.isHub ? 12 : 8) / t.k;
+          ctx.font = `${n.isHub ? '600' : '400'} ${fontSize}px Inter, system-ui, sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'top';
+          ctx.fillStyle = n.isHub ? '#fde68a' : '#e5e5e5';
+          const label = n.label.length > 28 ? n.label.slice(0, 26) + '…' : n.label;
+          ctx.fillText(label, n.x ?? 0, (n.y ?? 0) + r + 3);
+        }
+      }
+
+      ctx.restore();
+    };
+    rafId = requestAnimationFrame(render);
+    return () => cancelAnimationFrame(rafId);
   }, [size.w, size.h]);
 
-  // Safety net for interrupted drags on desktop: when the user alt-tabs
-  // mid-drag the window loses focus and react-force-graph never fires
-  // onNodeDragEnd, leaving the dragged node pinned. We track an
-  // isDragging ref via the lib's own start/end callbacks; on window
-  // blur we release fx/fy only if a drag is genuinely in progress.
-  // Importantly we no longer release on mouseup — that was racing with
-  // the library's own cleanup and corrupting state.
-  const isDraggingRef = useRef(false);
+  // ---- Mouse interactions ----------------------------------------------
+
   useEffect(() => {
-    const onBlur = () => {
-      if (!isDraggingRef.current) return;
-      isDraggingRef.current = false;
-      for (const n of nodes) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const o = n as any;
-        delete o.fx;
-        delete o.fy;
+    const canvas = canvasRef.current;
+    if (!canvas || !size.w) return;
+
+    // Translate a client point to world coordinates (pre-transform).
+    const toWorld = (clientX: number, clientY: number) => {
+      const r = canvas.getBoundingClientRect();
+      const t = transformRef.current;
+      const cx = clientX - r.left - size.w / 2 - t.x;
+      const cy = clientY - r.top - size.h / 2 - t.y;
+      return { x: cx / t.k, y: cy / t.k };
+    };
+
+    /** Find the topmost node under (wx, wy). Hubs win over leaves on ties. */
+    const nodeAt = (wx: number, wy: number): SimNode | null => {
+      let best: SimNode | null = null;
+      let bestD = Infinity;
+      for (const n of nodesRef.current) {
+        if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
+        const dx = (n.x ?? 0) - wx;
+        const dy = (n.y ?? 0) - wy;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        // Hit radius is a bit larger than the visible shape; bigger for hubs.
+        const r = nodeRadius(n) + (n.isHub ? 6 : 8);
+        if (d > r) continue;
+        // Bias toward hubs when the cursor sits in overlap regions.
+        const score = d - (n.isHub ? 4 : 0);
+        if (score < bestD) {
+          bestD = score;
+          best = n;
+        }
+      }
+      return best;
+    };
+
+    // Drag state
+    let dragNode: SimNode | null = null;
+    let dragOffset = { dx: 0, dy: 0 };
+    let panning = false;
+    let panLast = { x: 0, y: 0 };
+    let mouseDownAt = 0;
+    let downPoint = { x: 0, y: 0 };
+    // For rigid hub-group drag
+    let groupMembers: SimNode[] = [];
+    let groupOffsets: Map<string, { dx: number; dy: number }> = new Map();
+
+    const onMouseMove = (e: MouseEvent) => {
+      const world = toWorld(e.clientX, e.clientY);
+      if (dragNode) {
+        const newX = world.x + dragOffset.dx;
+        const newY = world.y + dragOffset.dy;
+        dragNode.fx = newX;
+        dragNode.fy = newY;
+        // Move members rigidly with the hub.
+        if (groupMembers.length > 0) {
+          for (const m of groupMembers) {
+            const off = groupOffsets.get(m.id);
+            if (!off) continue;
+            m.fx = newX + off.dx;
+            m.fy = newY + off.dy;
+          }
+        }
+        simRef.current?.alpha(0.3).restart();
+      } else if (panning) {
+        transformRef.current = {
+          ...transformRef.current,
+          x: transformRef.current.x + (e.clientX - panLast.x),
+          y: transformRef.current.y + (e.clientY - panLast.y),
+        };
+        panLast = { x: e.clientX, y: e.clientY };
+      } else {
+        // Just hover detection
+        const n = nodeAt(world.x, world.y);
+        hoveredRef.current = n?.id ?? null;
+        canvas.style.cursor = n ? 'pointer' : 'grab';
       }
     };
-    window.addEventListener('blur', onBlur);
-    return () => window.removeEventListener('blur', onBlur);
-  }, [nodes]);
 
-  const ready = size.w > 0 && size.h > 0;
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button !== 0) return; // only left button for now
+      const world = toWorld(e.clientX, e.clientY);
+      const n = nodeAt(world.x, world.y);
+      mouseDownAt = Date.now();
+      downPoint = { x: e.clientX, y: e.clientY };
+      if (n) {
+        dragNode = n;
+        dragOffset = { dx: (n.x ?? 0) - world.x, dy: (n.y ?? 0) - world.y };
+        // If it's a hub, snapshot its members' relative offsets for rigid drag.
+        groupMembers = [];
+        groupOffsets = new Map();
+        if (n.isHub && membersByHub) {
+          const memberIds = membersByHub.get(n.id) ?? [];
+          for (const mid of memberIds) {
+            const m = nodesRef.current.find((x) => x.id === mid);
+            if (!m) continue;
+            groupMembers.push(m);
+            groupOffsets.set(m.id, {
+              dx: (m.x ?? 0) - (n.x ?? 0),
+              dy: (m.y ?? 0) - (n.y ?? 0),
+            });
+          }
+        }
+        simRef.current?.alphaTarget(0.3).restart();
+        canvas.style.cursor = 'grabbing';
+      } else {
+        panning = true;
+        panLast = { x: e.clientX, y: e.clientY };
+        canvas.style.cursor = 'grabbing';
+      }
+    };
+
+    const onMouseUp = (e: MouseEvent) => {
+      const heldMs = Date.now() - mouseDownAt;
+      const moved =
+        Math.abs(e.clientX - downPoint.x) > 4 || Math.abs(e.clientY - downPoint.y) > 4;
+      if (dragNode) {
+        // Release fx/fy unless the node was barely moved (treat as click).
+        if (!moved && heldMs < 250) {
+          // Click on a node — call onSelect, release pin immediately.
+          onSelect?.(dragNode);
+          delete dragNode.fx;
+          delete dragNode.fy;
+          for (const m of groupMembers) {
+            delete m.fx;
+            delete m.fy;
+          }
+        } else {
+          // Real drag: release pin so simulation reabsorbs naturally.
+          delete dragNode.fx;
+          delete dragNode.fy;
+          for (const m of groupMembers) {
+            delete m.fx;
+            delete m.fy;
+          }
+        }
+        simRef.current?.alphaTarget(0);
+        dragNode = null;
+        groupMembers = [];
+        groupOffsets = new Map();
+      } else if (panning) {
+        if (!moved && heldMs < 250) {
+          onBackgroundClick?.();
+        }
+        panning = false;
+      }
+      canvas.style.cursor = 'grab';
+    };
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const r = canvas.getBoundingClientRect();
+      const px = e.clientX - r.left;
+      const py = e.clientY - r.top;
+      const t = transformRef.current;
+      // World coords under the pointer BEFORE zoom change
+      const wx = (px - size.w / 2 - t.x) / t.k;
+      const wy = (py - size.h / 2 - t.y) / t.k;
+      const dir = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      const newK = Math.max(0.2, Math.min(5, t.k * dir));
+      // Adjust translation so the point under the cursor stays fixed.
+      const newTx = px - size.w / 2 - wx * newK;
+      const newTy = py - size.h / 2 - wy * newK;
+      transformRef.current = { x: newTx, y: newTy, k: newK };
+    };
+
+    const onContextMenu = (e: MouseEvent) => {
+      // Right-click on a node: unpin (escape hatch from a sticky drag).
+      e.preventDefault();
+      const world = toWorld(e.clientX, e.clientY);
+      const n = nodeAt(world.x, world.y);
+      if (n) {
+        delete n.fx;
+        delete n.fy;
+        simRef.current?.alpha(0.3).restart();
+      }
+    };
+
+    canvas.addEventListener('mousemove', onMouseMove);
+    canvas.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mouseup', onMouseUp);
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    canvas.addEventListener('contextmenu', onContextMenu);
+
+    // Touch — map single-touch to mouse-equivalent semantics.
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      const t0 = e.touches[0]!;
+      onMouseDown({
+        button: 0,
+        clientX: t0.clientX,
+        clientY: t0.clientY,
+      } as MouseEvent);
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      const t0 = e.touches[0]!;
+      onMouseMove({
+        clientX: t0.clientX,
+        clientY: t0.clientY,
+      } as MouseEvent);
+      // Block native scroll when actually dragging something.
+      if (dragNode || panning) e.preventDefault();
+    };
+    const onTouchEnd = (e: TouchEvent) => {
+      const last = e.changedTouches[0];
+      if (!last) return;
+      onMouseUp({
+        clientX: last.clientX,
+        clientY: last.clientY,
+      } as MouseEvent);
+    };
+    canvas.addEventListener('touchstart', onTouchStart, { passive: true });
+    canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+    canvas.addEventListener('touchend', onTouchEnd);
+
+    return () => {
+      canvas.removeEventListener('mousemove', onMouseMove);
+      canvas.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mouseup', onMouseUp);
+      canvas.removeEventListener('wheel', onWheel);
+      canvas.removeEventListener('contextmenu', onContextMenu);
+      canvas.removeEventListener('touchstart', onTouchStart);
+      canvas.removeEventListener('touchmove', onTouchMove);
+      canvas.removeEventListener('touchend', onTouchEnd);
+    };
+  }, [size.w, size.h, membersByHub, onSelect, onBackgroundClick]);
+
+  // ---- Render -----------------------------------------------------------
 
   return (
     <div ref={containerRef} className="absolute inset-0 bg-neutral-950">
-      {ready && (
-        <FG
-          ref={fgRef}
-          // Remount the canvas when the dataset cardinality changes. This
-          // forces react-force-graph to rebuild its internal pickability
-          // layer, which otherwise gets stale references to old node
-          // positions and leaves some nodes permanently unclickable on
-          // desktop.
-          key={`fg-${nodes.length}-${links.length}`}
-          width={size.w}
-          height={size.h}
-          graphData={graphData}
-          backgroundColor="#0a0a0a"
-          cooldownTicks={300}
-          // High warmupTicks settles the simulation BEFORE the first paint,
-          // so every node has stable x/y when nodePointerAreaPaint builds
-          // the hit-test layer. Without enough warmup the picker disc gets
-          // painted at (0,0) for nodes still in flight.
-          warmupTicks={200}
-          d3VelocityDecay={0.3}
-          // nodeVal drives the internal hit-test radius even when we provide
-          // a custom nodePointerAreaPaint. Setting it ensures every node
-          // has a real picker target, not the default radius of 0 that
-          // makes some nodes invisible to the mouse pointer.
-          nodeVal={(n: unknown) => ((n as CanvasNode).isHub ? 30 : 6)}
-          nodeRelSize={1}
-          enableNodeDrag={true}
-          enablePanInteraction={true}
-          enableZoomInteraction={true}
-          // Keep drag handlers minimal — let react-force-graph do its
-          // built-in drag (which pins fx/fy during the drag). We reheat
-          // the simulation on start so neighbours respond, and explicitly
-          // release fx/fy on end so the user can drag the SAME node again
-          // (and other nodes after it) without getting stuck on the first
-          // pin.
-          onNodeDragStart={() => {
-            isDraggingRef.current = true;
-            fgRef.current?.d3ReheatSimulation?.();
-          }}
-          onNodeDragEnd={(node: unknown) => {
-            isDraggingRef.current = false;
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const o = node as any;
-            delete o.fx;
-            delete o.fy;
-          }}
-          onNodeClick={(node: unknown) => {
-            onSelect?.(node as CanvasNode);
-          }}
-          onNodeRightClick={(node: unknown) => {
-            // Right-click ALWAYS unpins. The previous toggle (pin/unpin)
-            // was a footgun: a misclicked right-click pinned a node and
-            // then drags felt rigid for the rest of the session. Keep
-            // the unpin behaviour so users have an escape hatch when
-            // they want to free a stuck node.
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const o = node as any;
-            delete o.fx;
-            delete o.fy;
-            fgRef.current?.d3ReheatSimulation?.();
-          }}
-          onBackgroundClick={() => onBackgroundClick?.()}
-          nodeCanvasObject={(node: unknown, ctx: CanvasRenderingContext2D, scale: number) => {
-            const n = node as CanvasNode;
-            const dimmed = lineageKeep ? !lineageKeep.has(n.id) : false;
-            const r = nodeRadius(n);
-            drawNode(ctx, n, r, dimmed);
-            if (selectedId === n.id) {
-              ctx.beginPath();
-              ctx.strokeStyle = '#f5b301';
-              ctx.lineWidth = 2;
-              ctx.arc(n.x ?? 0, n.y ?? 0, r + 4, 0, Math.PI * 2);
-              ctx.stroke();
-            }
-            if (!dimmed && (scale > 1.2 || n.isHub)) {
-              const fontSize = n.isHub ? 12 / scale : 8 / scale;
-              ctx.font = `${n.isHub ? '600' : '400'} ${fontSize}px Inter, system-ui, sans-serif`;
-              ctx.textAlign = 'center';
-              ctx.textBaseline = 'top';
-              ctx.fillStyle = n.isHub ? '#fde68a' : '#e5e5e5';
-              const label = n.label.length > 28 ? n.label.slice(0, 26) + '…' : n.label;
-              ctx.fillText(label, n.x ?? 0, (n.y ?? 0) + r + 3);
-            }
-          }}
-          // CRITICAL: when nodeCanvasObject is used, react-force-graph delegates
-          // hit-testing to nodePointerAreaPaint. If we don't paint a pickable
-          // shape here, every click falls through to the pan/zoom handler —
-          // which is exactly what produces the "whole graph moves as a block"
-          // bug. Paint a disc slightly larger than the visible shape so small
-          // nodes stay clickable too.
-          nodePointerAreaPaint={(
-            node: unknown,
-            color: string,
-            ctx: CanvasRenderingContext2D,
-            scale: number,
-          ) => {
-            const n = node as CanvasNode;
-            // Make the hit-test area substantially larger than the visible
-            // node so small leaves remain easy to grab on desktop (mouse
-            // pointer is a 1px target — without padding many nodes feel
-            // unpickable). Keep a minimum SCREEN-pixel target so zoomed-out
-            // graphs remain draggable on PC.
-            const safeScale = Math.max(scale || 1, 0.05);
-            const minScreenRadius = n.isHub ? 24 : 20;
-            const r = Math.max(
-              nodeRadius(n) + (n.isHub ? 6 : 12),
-              minScreenRadius / safeScale,
-            );
-            ctx.fillStyle = color;
-            ctx.beginPath();
-            ctx.arc(n.x ?? 0, n.y ?? 0, r, 0, Math.PI * 2);
-            ctx.fill();
-          }}
-          // We use the default link rendering for crisp lines + arrows but
-          // colour them per relation type via linkColor / linkWidth so the
-          // basic line drawing remains performant even with thousands of
-          // edges. (linkCanvasObject would force a full repaint per link.)
-          linkColor={(link: unknown) => {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const l = link as any;
-            const srcId = typeof l.source === 'object' && l.source
-              ? (l.source as CanvasNode).id
-              : (l.source as string);
-            const tgtId = typeof l.target === 'object' && l.target
-              ? (l.target as CanvasNode).id
-              : (l.target as string);
-            const dim = lineageKeep
-              ? !lineageKeep.has(srcId) || !lineageKeep.has(tgtId)
-              : false;
-            return dim ? (l.color as string) + '22' : (l.color as string) + 'cc';
-          }}
-          linkWidth={(link: unknown) => (link as CanvasLink).width}
-          linkDirectionalArrowLength={(link: unknown) => {
-            const l = link as CanvasLink;
-            return l.isHubEdge || l.relation === 'same_session' ? 0 : 3;
-          }}
-          linkDirectionalArrowRelPos={1}
-          linkDirectionalArrowColor={(link: unknown) =>
-            (link as CanvasLink).color
-          }
-        />
-      )}
+      <canvas
+        ref={canvasRef}
+        className="block touch-none select-none"
+        style={{ cursor: 'grab' }}
+      />
     </div>
   );
+}
+
+function drawArrowHead(
+  ctx: CanvasRenderingContext2D,
+  s: SimNode,
+  t: SimNode,
+  color: string,
+  scale: number,
+) {
+  const sx = s.x ?? 0;
+  const sy = s.y ?? 0;
+  const tx = t.x ?? 0;
+  const ty = t.y ?? 0;
+  const dx = tx - sx;
+  const dy = ty - sy;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  if (len < 1) return;
+  const ux = dx / len;
+  const uy = dy / len;
+  // Stop a few px short of the target node.
+  const r = nodeRadius(t) + 1;
+  const ex = tx - ux * r;
+  const ey = ty - uy * r;
+  const size = 6 / Math.max(scale, 0.5);
+  const px = -uy;
+  const py = ux;
+  ctx.beginPath();
+  ctx.moveTo(ex, ey);
+  ctx.lineTo(ex - ux * size + px * size * 0.5, ey - uy * size + py * size * 0.5);
+  ctx.lineTo(ex - ux * size - px * size * 0.5, ey - uy * size - py * size * 0.5);
+  ctx.closePath();
+  ctx.fillStyle = color + 'cc';
+  ctx.fill();
 }
 
 /**
