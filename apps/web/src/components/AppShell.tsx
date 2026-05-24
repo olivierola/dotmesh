@@ -4,6 +4,7 @@ import clsx from 'clsx';
 import { supabase } from '@/lib/supabase';
 import { api } from '@/lib/api-client';
 import { useRealtimeNotifications } from '@/hooks/useRealtimeNotifications';
+import { displayForNode } from '@/lib/node-display';
 
 const NAV = [
   { to: '/dashboard', label: 'Dashboard', icon: '🏠' },
@@ -218,11 +219,16 @@ function CommandPalette({ onClose }: { onClose: () => void }) {
         const data = await api.search(q, 8);
         if (cancelled) return;
         setResults(
-          data.results.map((r) => ({
-            id: r.id,
-            label: r.summary ?? r.content.slice(0, 80),
-            subtitle: r.source,
-          })),
+          data.results.map((r) => {
+            // The search result row has the same shape as MockNode for the
+            // fields the display helper actually reads.
+            const display = displayForNode(r as unknown as Parameters<typeof displayForNode>[0]);
+            return {
+              id: r.id,
+              label: display.title,
+              subtitle: display.subtitle ?? r.source,
+            };
+          }),
         );
       } catch {
         if (!cancelled) setResults([]);

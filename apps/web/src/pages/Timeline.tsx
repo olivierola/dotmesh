@@ -5,6 +5,7 @@ import { api } from '@/lib/api-client';
 import type { MockNode } from '@/lib/mock';
 import CaptureBar, { type CapturePayload } from '@/components/CaptureBar';
 import { SkeletonList } from '@/components/Skeleton';
+import { displayForNode } from '@/lib/node-display';
 
 interface SessionGroup {
   /** session_id or 'older' for nodes with no session_id. */
@@ -384,57 +385,42 @@ function NodeRow({
   onTogglePin: () => void;
   onDelete: () => void;
 }) {
-  const [draft, setDraft] = useState(n.summary ?? n.content.slice(0, 240));
+  const display = displayForNode(n);
+  const [draft, setDraft] = useState(display.title);
+  const [expanded, setExpanded] = useState(false);
 
   return (
     <li
-      className={`flex gap-3 rounded-md border p-4 text-sm ${
-        selected ? 'border-accent/60 bg-accent/5' : 'border-neutral-800 bg-neutral-900'
+      className={`flex gap-3 rounded-lg border p-3 text-sm transition-colors ${
+        selected
+          ? 'border-accent/60 bg-accent/5'
+          : 'border-neutral-800 bg-neutral-900 hover:border-neutral-700'
       }`}
     >
       <input
         type="checkbox"
         checked={selected}
         onChange={onToggle}
-        className="mt-1 h-3 w-3 accent-accent"
+        className="mt-1.5 h-3 w-3 shrink-0 accent-accent"
       />
-      <div className="min-w-0 flex-1">
-        <div className="mb-1 flex items-center justify-between text-xs text-neutral-500">
-          <span>
-            {n.source} · {formatDistanceToNow(new Date(n.created_at), { addSuffix: true })}
-            {n.pinned && <span className="ml-2 text-accent">★ pinned</span>}
-          </span>
-          <div className="flex items-center gap-3">
-            {n.score != null && <span>score {n.score.toFixed(2)}</span>}
-            <button
-              onClick={onTogglePin}
-              className={n.pinned ? 'text-accent' : 'text-neutral-500 hover:text-accent'}
-              title={n.pinned ? 'Unpin' : 'Pin'}
-            >
-              ★
-            </button>
-            {!editing && (
-              <button
-                onClick={() => {
-                  setDraft(n.summary ?? n.content.slice(0, 240));
-                  onStartEdit();
-                }}
-                className="text-neutral-500 hover:text-neutral-200"
-                title="Edit summary"
-              >
-                ✎
-              </button>
-            )}
-            <button
-              onClick={onDelete}
-              className="text-neutral-500 hover:text-red-400"
-              title="Delete"
-            >
-              ×
-            </button>
-          </div>
-        </div>
 
+      {/* Favicon / type icon */}
+      <div className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center overflow-hidden rounded-md border border-neutral-800 bg-neutral-950 text-base">
+        {display.faviconUrl ? (
+          <img
+            src={display.faviconUrl}
+            alt=""
+            className="h-5 w-5"
+            onError={(e) => {
+              (e.currentTarget as HTMLImageElement).style.display = 'none';
+            }}
+          />
+        ) : (
+          <span>{iconForNode(n)}</span>
+        )}
+      </div>
+
+      <div className="min-w-0 flex-1">
         {editing ? (
           <div className="space-y-2">
             <textarea
@@ -461,28 +447,50 @@ function NodeRow({
           </div>
         ) : (
           <>
-            {/* Capture type + element type badges */}
-            {(n.metadata?.captureType || n.metadata?.elementType) && (
-              <div className="mb-1.5 flex items-center gap-1.5 text-[10px]">
-                {n.metadata?.captureType && (
-                  <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-300">
-                    {n.metadata.captureType}
-                  </span>
-                )}
-                {n.metadata?.elementType && n.metadata.elementType !== 'text' && (
-                  <span className="rounded border border-neutral-800 px-1.5 py-0.5 text-neutral-400">
-                    {n.metadata.elementType}
-                  </span>
-                )}
+            <div className="flex items-start justify-between gap-2">
+              <h3
+                className="min-w-0 flex-1 truncate text-[14px] font-medium text-neutral-100"
+                title={display.title}
+              >
+                {n.pinned && <span className="mr-1 text-accent">★</span>}
+                {display.title}
+              </h3>
+              <div className="flex shrink-0 items-center gap-1 text-neutral-500">
+                <button
+                  onClick={onTogglePin}
+                  className={`rounded p-1 transition-colors ${
+                    n.pinned ? 'text-accent' : 'hover:text-accent'
+                  }`}
+                  title={n.pinned ? 'Unpin' : 'Pin'}
+                >
+                  ★
+                </button>
+                <button
+                  onClick={() => {
+                    setDraft(display.title);
+                    onStartEdit();
+                  }}
+                  className="rounded p-1 hover:text-neutral-200"
+                  title="Edit"
+                >
+                  ✎
+                </button>
+                <button
+                  onClick={onDelete}
+                  className="rounded p-1 hover:text-red-400"
+                  title="Delete"
+                >
+                  ×
+                </button>
               </div>
-            )}
+            </div>
 
             {/* Media thumb for images/videos */}
             {n.metadata?.elementType === 'image' && n.metadata?.mediaUrl && (
-              <div className="mb-2 overflow-hidden rounded border border-neutral-800 bg-neutral-950">
+              <div className="mt-2 overflow-hidden rounded border border-neutral-800 bg-neutral-950">
                 <img
                   src={n.metadata.mediaUrl as string}
-                  alt={n.summary ?? ''}
+                  alt={display.title}
                   className="block h-auto max-h-48 w-full object-contain"
                   onError={(e) => {
                     (e.currentTarget as HTMLImageElement).style.display = 'none';
@@ -491,7 +499,7 @@ function NodeRow({
               </div>
             )}
             {n.metadata?.elementType === 'video' && n.metadata?.mediaUrl && (
-              <div className="mb-2 overflow-hidden rounded border border-neutral-800 bg-neutral-950">
+              <div className="mt-2 overflow-hidden rounded border border-neutral-800 bg-neutral-950">
                 <video
                   src={n.metadata.mediaUrl as string}
                   controls
@@ -501,25 +509,82 @@ function NodeRow({
               </div>
             )}
 
-            <p className="whitespace-pre-wrap text-neutral-200">
-              {n.summary ?? n.content.slice(0, 240)}
-            </p>
-          </>
-        )}
-
-        {n.entities.length > 0 && !editing && (
-          <div className="mt-2 flex flex-wrap gap-1">
-            {n.entities.slice(0, 6).map((e, i) => (
-              <span
-                key={i}
-                className="rounded-full bg-neutral-800 px-2 py-0.5 text-[10px] text-neutral-400"
+            {display.body && (
+              <p
+                onClick={() => setExpanded((v) => !v)}
+                className={`mt-1 cursor-pointer text-[13px] leading-relaxed text-neutral-400 ${
+                  expanded ? 'whitespace-pre-wrap' : 'line-clamp-2'
+                }`}
+                title={expanded ? 'Collapse' : 'Expand'}
               >
-                {e.value}
-              </span>
-            ))}
-          </div>
+                {display.body}
+              </p>
+            )}
+
+            {/* Footer: host · time · open link · badges */}
+            <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-neutral-500">
+              {display.subtitle && (
+                <span className="font-medium text-neutral-400">{display.subtitle}</span>
+              )}
+              <span>·</span>
+              <span>{formatDistanceToNow(new Date(n.created_at), { addSuffix: true })}</span>
+              {n.metadata?.captureType && (
+                <>
+                  <span>·</span>
+                  <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-300/80">
+                    {String(n.metadata.captureType)}
+                  </span>
+                </>
+              )}
+              {n.source_url && (
+                <a
+                  href={n.source_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="ml-auto rounded border border-neutral-800 px-2 py-0.5 text-neutral-400 hover:border-accent hover:text-accent"
+                >
+                  open ↗
+                </a>
+              )}
+            </div>
+
+            {n.entities.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {n.entities.slice(0, 5).map((e, i) => (
+                  <span
+                    key={i}
+                    className="rounded-full bg-neutral-800/80 px-2 py-0.5 text-[10px] text-neutral-400"
+                  >
+                    {e.value}
+                  </span>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
     </li>
   );
+}
+
+function iconForNode(n: MockNode): string {
+  const t = (n.node_type as string | undefined) ?? n.metadata?.elementType;
+  switch (t) {
+    case 'image':
+      return '🖼';
+    case 'video':
+      return '🎬';
+    case 'link':
+      return '🔗';
+    case 'code':
+      return '⌨';
+    case 'quote':
+      return '“';
+    case 'page':
+      return '📄';
+    case 'action':
+      return '⚡';
+    default:
+      return '📝';
+  }
 }

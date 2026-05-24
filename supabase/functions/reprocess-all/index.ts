@@ -46,12 +46,26 @@ Deno.serve(async (req) => {
     let collectionsTotal = 0;
     const errors: string[] = [];
 
+    /**
+     * True if the existing summary is essentially a bare URL or one of our
+     * internal "[Page] https://…" / "[Image] …" placeholders — these are the
+     * ones we want to regenerate even when summary is technically present.
+     */
+    function summaryLooksRaw(s: string | null): boolean {
+      if (!s) return true;
+      const t = s.trim();
+      if (!t) return true;
+      if (/^\[(Page|Image|Video|Link|Quote|Code)\]/i.test(t)) return true;
+      if (/^https?:\/\/\S+$/i.test(t)) return true;
+      return false;
+    }
+
     for (const node of nodes ?? []) {
       try {
         const needsEmbed = !node.embedding;
         const ents = (node.entities ?? []) as Array<{ value: string }>;
         const needsEnts = !Array.isArray(ents) || ents.length === 0;
-        const needsSummary = !node.summary;
+        const needsSummary = !node.summary || summaryLooksRaw(node.summary as string | null);
 
         if (!needsEmbed && !needsEnts && !needsSummary) {
           continue; // already healthy

@@ -57,6 +57,24 @@ export default function SettingsPage() {
     }
   };
 
+  const [cleaning, setCleaning] = useState(false);
+  const cleanupTitles = async () => {
+    if (!confirm('Re-run LLM cleanup on up to 100 memories with raw URLs / missing titles?')) return;
+    setCleaning(true);
+    setMessage(null);
+    try {
+      const r = await api.reprocessAll();
+      setMessage({
+        kind: 'ok',
+        text: `Scanned ${r.scanned}, cleaned ${r.processed} (${r.embedded} re-embedded). Run again for the next batch.`,
+      });
+    } catch (e) {
+      setMessage({ kind: 'error', text: (e as Error).message });
+    } finally {
+      setCleaning(false);
+    }
+  };
+
   const exportData = async () => {
     setExporting(true);
     setMessage(null);
@@ -232,6 +250,14 @@ export default function SettingsPage() {
           Your data is yours. Export everything in one click, delete it any time.
         </p>
         <div className="flex flex-wrap gap-2">
+          <button
+            onClick={cleanupTitles}
+            disabled={cleaning}
+            className="rounded border border-neutral-700 px-3 py-1.5 text-xs text-neutral-200 hover:border-neutral-600 disabled:opacity-50"
+            title="Re-generate titles, summaries and embeddings for memories that look raw"
+          >
+            {cleaning ? 'Cleaning…' : '✨ Clean up memory titles'}
+          </button>
           <button
             onClick={exportData}
             disabled={exporting}

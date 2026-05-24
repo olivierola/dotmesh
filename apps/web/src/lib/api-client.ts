@@ -736,6 +736,25 @@ export const api = {
     return realFetch('/collections/reclassify-orphans', { method: 'POST' });
   },
 
+  // ----- Maintenance -----
+  /**
+   * Re-runs LLM summary + entity extraction + embeddings on up to ~100 of the
+   * current user's nodes that are missing those fields or whose summary is a
+   * raw URL / "[Page] …" placeholder. Idempotent — call again to process the
+   * next batch.
+   */
+  async reprocessAll(): Promise<{
+    ok: boolean;
+    scanned: number;
+    processed: number;
+    embedded: number;
+    edges_created: number;
+    collections_assigned: number;
+    errors: string[];
+  }> {
+    return realFetch('/reprocess-all', { method: 'POST' });
+  },
+
   // ----- Insights (on-demand) -----
   async generateInsight(days = 7): Promise<{
     ok: boolean;
