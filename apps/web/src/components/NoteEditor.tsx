@@ -17,12 +17,15 @@ import { useEditor, EditorContent, type Editor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import Link from '@tiptap/extension-link';
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { api } from '@/lib/api-client';
 
 interface Props {
   initialContent: string;
   onChange: (markdown: string, html: string) => void;
   placeholder?: string;
+  /** Ids of notes the picker should NOT offer (e.g. the current note). */
+  excludeNoteIds?: string[];
 }
 
 /**
@@ -99,8 +102,15 @@ function renderInline(nodes: unknown[]): string {
     .join('');
 }
 
-export default function NoteEditor({ initialContent, onChange, placeholder }: Props) {
+export default function NoteEditor({
+  initialContent,
+  onChange,
+  placeholder,
+  excludeNoteIds,
+}: Props) {
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [urlOpen, setUrlOpen] = useState(false);
 
   const editor = useEditor({
     extensions: [
@@ -142,10 +152,65 @@ export default function NoteEditor({ initialContent, onChange, placeholder }: Pr
     <div className="note-editor">
       {editor && (
         <div className="sticky top-0 z-10 -mx-1 mb-3 bg-neutral-950/95 py-2 backdrop-blur">
-          <Toolbar editor={editor} />
+          <Toolbar
+            editor={editor}
+            onOpenNotePicker={() => setPickerOpen(true)}
+            onOpenUrlModal={() => setUrlOpen(true)}
+          />
         </div>
       )}
       <EditorContent editor={editor} />
+      {pickerOpen && editor && (
+        <NotePickerModal
+          excludeIds={excludeNoteIds ?? []}
+          onClose={() => setPickerOpen(false)}
+          onPick={(title) => {
+            editor.chain().focus().insertContent(`[[${title}]] `).run();
+            setPickerOpen(false);
+          }}
+        />
+      )}
+      {urlOpen && editor && (
+        <UrlModal
+          initialUrl={(editor.getAttributes('link').href as string | undefined) ?? ''}
+          initialText={editor.state.doc.textBetween(
+            editor.state.selection.from,
+            editor.state.selection.to,
+            ' ',
+          )}
+          onClose={() => setUrlOpen(false)}
+          onSubmit={({ url, text }) => {
+            const chain = editor.chain().focus();
+            const { from, to } = editor.state.selection;
+            if (from === to && text) {
+              // No selection: insert the text as a link
+              chain
+                .insertContent({
+                  type: 'text',
+                  text,
+                  marks: [{ type: 'link', attrs: { href: url } }],
+                })
+                .run();
+            } else if (from !== to && text && text !== editor.state.doc.textBetween(from, to, ' ')) {
+              // Replace the selected text and apply the link
+              chain
+                .insertContent({
+                  type: 'text',
+                  text,
+                  marks: [{ type: 'link', attrs: { href: url } }],
+                })
+                .run();
+            } else {
+              chain.extendMarkRange('link').setLink({ href: url }).run();
+            }
+            setUrlOpen(false);
+          }}
+          onRemove={() => {
+            editor.chain().focus().extendMarkRange('link').unsetLink().run();
+            setUrlOpen(false);
+          }}
+        />
+      )}
       <style>{`
         .tiptap-note p.is-editor-empty:first-child::before {
           content: attr(data-placeholder);
@@ -189,19 +254,15 @@ export default function NoteEditor({ initialContent, onChange, placeholder }: Pr
 /*                          Toolbar                               */
 /* ------------------------------------------------------------- */
 
-function Toolbar({ editor }: { editor: Editor }) {
-  const insertWikiLink = () => {
-    const title = window.prompt('Link to which note? (type the exact title)');
-    if (!title?.trim()) return;
-    editor.chain().focus().insertContent(`[[${title.trim()}]] `).run();
-  };
-
-  const promptLink = () => {
-    const url = window.prompt('URL');
-    if (!url?.trim()) return;
-    editor.chain().focus().extendMarkRange('link').setLink({ href: url.trim() }).run();
-  };
-
+function Toolbar({
+  editor,
+  onOpenNotePicker,
+  onOpenUrlModal,
+}: {
+  editor: Editor;
+  onOpenNotePicker: () => void;
+  onOpenUrlModal: () => void;
+}) {
   return (
     <div className="flex flex-wrap items-center gap-0.5 rounded-md border border-neutral-800 bg-neutral-900/60 p-1 text-xs">
       <ToolGroup>
@@ -304,10 +365,10 @@ function Toolbar({ editor }: { editor: Editor }) {
       <Divider />
 
       <ToolGroup>
-        <ToolBtn onClick={promptLink} title="Insert URL link" active={editor.isActive('link')}>
+        <ToolBtn onClick={onOpenUrlModal} title="Insert URL link" active={editor.isActive('link')}>
           🔗
         </ToolBtn>
-        <ToolBtn onClick={insertWikiLink} title="Link another note ([[title]])">
+        <ToolBtn onClick={onOpenNotePicker} title="Link another note">
           [[ ]]
         </ToolBtn>
         <ToolBtn
@@ -375,6 +436,239 @@ function ToolBtn({
     >
       {children}
     </button>
+  );
+}
+
+/* ------------------------------------------------------------- */
+/*                      Modal shell                               */
+/* ------------------------------------------------------------- */
+
+function ModalShell({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950 shadow-2xl"
+      >
+        <header className="flex items-center justify-between border-b border-neutral-900 px-4 py-3">
+          <h3 className="text-sm font-semibold text-neutral-100">{title}</h3>
+          <button
+            onClick={onClose}
+            className="text-neutral-500 hover:text-neutral-200"
+            aria-label="Close"
+          >
+            ✕
+          </button>
+        </header>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------- */
+/*                    Note picker modal                           */
+/* ------------------------------------------------------------- */
+
+function NotePickerModal({
+  excludeIds,
+  onPick,
+  onClose,
+}: {
+  excludeIds: string[];
+  onPick: (title: string) => void;
+  onClose: () => void;
+}) {
+  const [q, setQ] = useState('');
+  const [notes, setNotes] = useState<Array<{ id: string; title: string; updated_at: string | null }>>([]);
+  const [loading, setLoading] = useState(true);
+  const exclude = useMemo(() => new Set(excludeIds), [excludeIds]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const ns = await api.listNotes();
+        if (cancelled) return;
+        setNotes(ns.filter((n) => !exclude.has(n.id)));
+      } catch {
+        if (!cancelled) setNotes([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [exclude]);
+
+  const filtered = q.trim()
+    ? notes.filter((n) => n.title.toLowerCase().includes(q.toLowerCase()))
+    : notes;
+
+  return (
+    <ModalShell title="Link another note" onClose={onClose}>
+      <div className="p-3">
+        <input
+          autoFocus
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && filtered.length > 0) {
+              onPick(filtered[0]!.title);
+            }
+          }}
+          placeholder="Search notes by title…"
+          className="w-full rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm placeholder-neutral-600 focus:border-accent focus:outline-none"
+        />
+      </div>
+      <ul className="max-h-72 overflow-y-auto border-t border-neutral-900">
+        {loading && <li className="px-4 py-3 text-xs text-neutral-500">Loading…</li>}
+        {!loading && filtered.length === 0 && (
+          <li className="px-4 py-6 text-center text-xs text-neutral-500">
+            {q.trim() ? 'No notes match.' : 'No other notes yet.'}
+            {q.trim() && (
+              <>
+                <br />
+                <button
+                  onClick={() => onPick(q.trim())}
+                  className="mt-2 text-accent hover:underline"
+                >
+                  Insert [[{q.trim()}]] anyway
+                </button>
+              </>
+            )}
+          </li>
+        )}
+        {!loading &&
+          filtered.map((n) => (
+            <li key={n.id}>
+              <button
+                onClick={() => onPick(n.title)}
+                className="block w-full px-4 py-2.5 text-left text-sm text-neutral-200 hover:bg-neutral-900"
+              >
+                <span className="text-accent">[[</span>
+                {n.title}
+                <span className="text-accent">]]</span>
+              </button>
+            </li>
+          ))}
+      </ul>
+      <div className="border-t border-neutral-900 px-4 py-2 text-[10px] text-neutral-600">
+        ↵ pick first · esc close
+      </div>
+    </ModalShell>
+  );
+}
+
+/* ------------------------------------------------------------- */
+/*                          URL modal                             */
+/* ------------------------------------------------------------- */
+
+function UrlModal({
+  initialUrl,
+  initialText,
+  onSubmit,
+  onRemove,
+  onClose,
+}: {
+  initialUrl: string;
+  initialText: string;
+  onSubmit: (v: { url: string; text: string }) => void;
+  onRemove: () => void;
+  onClose: () => void;
+}) {
+  const [url, setUrl] = useState(initialUrl);
+  const [text, setText] = useState(initialText);
+  const hasExisting = initialUrl.length > 0;
+
+  const submit = () => {
+    const trimmed = url.trim();
+    if (!trimmed) return;
+    const normalized = /^[a-z]+:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    onSubmit({ url: normalized, text: text.trim() });
+  };
+
+  return (
+    <ModalShell title={hasExisting ? 'Edit link' : 'Insert link'} onClose={onClose}>
+      <div className="space-y-3 p-4">
+        <div>
+          <label className="mb-1 block text-[10px] font-medium uppercase tracking-widest text-neutral-500">
+            URL
+          </label>
+          <input
+            autoFocus
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') submit();
+            }}
+            placeholder="https://example.com"
+            className="w-full rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm placeholder-neutral-600 focus:border-accent focus:outline-none"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-[10px] font-medium uppercase tracking-widest text-neutral-500">
+            Display text {initialText ? '(selection)' : '(optional)'}
+          </label>
+          <input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') submit();
+            }}
+            placeholder="Link text"
+            className="w-full rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm placeholder-neutral-600 focus:border-accent focus:outline-none"
+          />
+        </div>
+      </div>
+      <footer className="flex items-center justify-between gap-2 border-t border-neutral-900 px-3 py-3">
+        {hasExisting ? (
+          <button
+            onClick={onRemove}
+            className="rounded border border-red-900 px-3 py-1.5 text-xs text-red-400 hover:bg-red-950"
+          >
+            Remove link
+          </button>
+        ) : (
+          <span />
+        )}
+        <div className="flex gap-2">
+          <button
+            onClick={onClose}
+            className="rounded border border-neutral-800 px-3 py-1.5 text-xs text-neutral-300 hover:border-neutral-700"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={!url.trim()}
+            className="rounded bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:bg-accent-600 disabled:opacity-50"
+          >
+            {hasExisting ? 'Update' : 'Insert'}
+          </button>
+        </div>
+      </footer>
+    </ModalShell>
   );
 }
 

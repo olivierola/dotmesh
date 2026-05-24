@@ -395,6 +395,10 @@ export interface ExtraHubLayer {
     icon?: string | null;
     members: string[];
   }>;
+  /** Ids of already-created hubs (e.g. site hubs from hubMembers) that
+   *  should ALSO be linked to the center. The center→hub edge is added
+   *  but the hub is not duplicated. */
+  alsoLinkHubIds?: string[];
 }
 
 export function buildCanvasData(opts: {
@@ -442,7 +446,8 @@ export function buildCanvasData(opts: {
 
   // ---- Extra hub layer: "Me" + per-collection sub-hubs ----
   if (opts.extraHubs) {
-    const { centerId, centerLabel, centerColor, centerSize, subHubs } = opts.extraHubs;
+    const { centerId, centerLabel, centerColor, centerSize, subHubs, alsoLinkHubIds } =
+      opts.extraHubs;
     canvasNodes.push({
       id: centerId,
       label: centerLabel,
@@ -451,7 +456,10 @@ export function buildCanvasData(opts: {
       isHub: true,
       shape: 'circle',
     });
-    membersByHub.set(centerId, subHubs.map((s) => s.id));
+    membersByHub.set(centerId, [
+      ...subHubs.map((s) => s.id),
+      ...(alsoLinkHubIds ?? []),
+    ]);
 
     for (const sub of subHubs) {
       canvasNodes.push({
@@ -490,6 +498,22 @@ export function buildCanvasData(opts: {
         });
       }
       membersByHub.set(sub.id, ownedMembers);
+    }
+
+    // Extra center → existing-hub links (e.g. center → each site hub).
+    // The destination hub already exists in canvasNodes (created earlier),
+    // so we only push the edge.
+    for (const hubId of alsoLinkHubIds ?? []) {
+      canvasLinks.push({
+        id: `${centerId}->${hubId}`,
+        source: centerId,
+        target: hubId,
+        relation: 'me_to_hub',
+        color: centerColor + 'aa',
+        width: 1.0,
+        style: 'dashed',
+        isHubEdge: true,
+      });
     }
   }
 

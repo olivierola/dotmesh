@@ -329,15 +329,23 @@ export default function GraphPage() {
         members: collectionMembers.get(c.id) ?? [],
       }));
 
-    const extraHubs: ExtraHubLayer | null = subHubs.length > 0
-      ? {
-          centerId: 'me:hub',
-          centerLabel: 'You',
-          centerColor: HUB_COLOR,
-          centerSize: Math.max(60, subHubs.length * 6),
-          subHubs,
-        }
-      : null;
+    // Site hubs already get an id of the form "hub:<key>" inside
+    // buildCanvasData; we wire the center "You" to each of them too.
+    const siteHubIds = Array.from(hubMembers.keys())
+      .filter((k) => (hubMembers.get(k)?.length ?? 0) > 0)
+      .map((k) => `hub:${k}`);
+
+    const extraHubs: ExtraHubLayer | null =
+      subHubs.length > 0 || siteHubIds.length > 0
+        ? {
+            centerId: 'me:hub',
+            centerLabel: 'You',
+            centerColor: HUB_COLOR,
+            centerSize: Math.max(60, (subHubs.length + siteHubIds.length) * 4),
+            subHubs,
+            alsoLinkHubIds: siteHubIds,
+          }
+        : null;
 
     return buildCanvasData({
       nodes: data.nodes,

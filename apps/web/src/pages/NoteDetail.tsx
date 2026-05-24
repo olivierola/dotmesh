@@ -132,6 +132,7 @@ export default function NoteDetailPage() {
             <NoteEditor
               key={data.note.id}
               initialContent={data.note.content}
+              excludeNoteIds={[data.note.id]}
               onChange={(md, html) => save.mutate({ content: md, html })}
             />
           )
