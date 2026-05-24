@@ -112,6 +112,57 @@ function looksLikeBareUrl(s: string | null): boolean {
   return false;
 }
 
+/**
+ * Site-specific boilerplate that the extension often captures from the page
+ * chrome before the actual content. Stripped from the head of the body so
+ * users don't see "Commencer un postVidéoPhotoRédiger un article…" etc.
+ */
+const NOISE_PREFIXES: RegExp[] = [
+  /^Commencer un post[^.]*?(?=[A-Z][a-zéèà])/i,
+  /^Sélectionnez la vue du fil[^.]*?(?=[A-Z][a-zéèà])/i,
+  /^Skip to (main )?content[^.]{0,40}/i,
+  /^Sign in to[^.]{0,80}/i,
+  /^Accept (all )?cookies[^.]{0,80}/i,
+  /^Reposting[^.]{0,40}/i,
+];
+
+const NOISE_GLOBAL: RegExp[] = [
+  /\b#\w+(\s+#\w+){2,}/g, // long #hashtag chains at the end
+];
+
+/**
+ * Inserts line breaks where the raw scrape glued sentences together.
+ * Pattern: lowercase or punctuation immediately followed by an uppercase
+ * letter is almost always a missing space/newline. We also normalize bullet
+ * markers and emoji-numbered lists onto their own line.
+ */
+function reflow(text: string): string {
+  let s = text;
+  // Strip known noise prefixes
+  for (const re of NOISE_PREFIXES) s = s.replace(re, '');
+  // Strip noise globals (only when not the whole content)
+  for (const re of NOISE_GLOBAL) s = s.replace(re, '');
+  // Number-emoji enumerators 1️⃣ 2️⃣ … → newline before each
+  s = s.replace(/\s*([1-9]\u{FE0F}?\u{20E3})/gu, '\n\n$1 ');
+  // Bullet markers " • " / " · " → newline + bullet
+  s = s.replace(/\s+[•·]\s+/g, '\n• ');
+  // Sentence boundary that lost its space: ".A" / "?A" / "!A"
+  s = s.replace(/([.!?])([A-ZÉÈÀ])/g, '$1 $2');
+  // Paragraph boundary: lowercase letter immediately followed by capital +
+  // lowercase (CamelCase glue from scraped DOM, e.g. "...la guerre.Une dépendance")
+  s = s.replace(/([a-zéèà])\.\s*([A-ZÉÈÀ][a-zéèà])/g, '$1.\n\n$2');
+  // Hashtag block at the end → own paragraph
+  s = s.replace(/(\s)(#\w+(\s+#\w+){2,})\s*$/u, '\n\n$2');
+  // Collapse 3+ blank lines
+  s = s.replace(/\n{3,}/g, '\n\n');
+  return s.trim();
+}
+
+export function cleanBodyText(raw: string | null | undefined): string {
+  if (!raw) return '';
+  return reflow(raw);
+}
+
 export function displayForNode(n: MockNode): NodeDisplay {
   const md = n.metadata as Record<string, unknown> | undefined;
   const extracted = md?.extracted as
@@ -133,13 +184,15 @@ export function displayForNode(n: MockNode): NodeDisplay {
   }
 
   // Body = a longer description distinct from the title. Suppress it when it
-  // duplicates the title or is itself a bare URL.
+  // duplicates the title or is itself a bare URL. Reflow scraped HTML where
+  // sentence breaks were lost.
   let body: string | null = null;
   if (rawSummary && rawSummary !== title && !looksLikeBareUrl(rawSummary)) {
-    body = rawSummary;
+    body = cleanBodyText(rawSummary);
   } else if (rawContent && rawContent !== title && !looksLikeBareUrl(rawContent)) {
-    body = rawContent;
+    body = cleanBodyText(rawContent);
   }
+  if (body && body === title) body = null;
 
   // Host + favicon
   let host: string | null = null;
@@ -176,7 +229,7 @@ export function displayForNode(n: MockNode): NodeDisplay {
   return {
     title,
     subtitle,
-    body: body && body !== title ? body.slice(0, 800) : null,
+    body: body && body !== title ? body : null,
     host,
     faviconUrl,
     isLinkLike,

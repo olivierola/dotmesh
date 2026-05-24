@@ -13,6 +13,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { formatDistanceToNow } from 'date-fns';
 import { api } from '@/lib/api-client';
 import { SkeletonList } from '@/components/Skeleton';
+import { displayForNode } from '@/lib/node-display';
 
 export default function CollectionDetailPage() {
   const { id = '' } = useParams<{ id: string }>();
@@ -173,37 +174,78 @@ function NodeRow({
     pinned: boolean;
     node_type: string | null;
     link_source: string;
+    metadata?: Record<string, unknown>;
+    entities?: Array<{ value: string }>;
   };
 }) {
   const [expanded, setExpanded] = useState(false);
-  const title =
-    (node.summary?.split('\n')[0] ?? '').trim() ||
-    (node.content.split('\n')[0] ?? '').slice(0, 120) ||
-    '(untitled)';
-  const body = node.summary && node.summary !== title ? node.summary : node.content;
+  // displayForNode expects MockNode-ish; the row shape is a superset of what
+  // it actually reads, so the cast is safe.
+  const display = displayForNode(node as unknown as Parameters<typeof displayForNode>[0]);
+  const collapsedBody =
+    display.body && display.body.length > 280
+      ? display.body.slice(0, 280).replace(/\s+\S*$/, '') + '…'
+      : display.body;
+  const hasMore = !!display.body && display.body.length > 280;
 
   return (
-    <li className="overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/40 p-3 text-sm transition-colors hover:border-neutral-700">
+    <li className="overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/40 p-4 text-sm transition-colors hover:border-neutral-700">
       <div className="flex items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <button
-            onClick={() => setExpanded((v) => !v)}
-            className="block w-full text-left font-medium text-neutral-100 hover:text-accent"
-          >
-            {node.pinned && <span className="mr-1 text-accent">★</span>}
-            {title}
-          </button>
-          {expanded && (
-            <p className="mt-2 whitespace-pre-wrap break-words text-xs text-neutral-300">
-              {body}
-            </p>
+        {/* Favicon */}
+        <div className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center overflow-hidden rounded-md border border-neutral-800 bg-neutral-950">
+          {display.faviconUrl ? (
+            <img
+              src={display.faviconUrl}
+              alt=""
+              className="h-5 w-5"
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).style.display = 'none';
+              }}
+            />
+          ) : (
+            <span className="text-base">📝</span>
           )}
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-neutral-500">
+        </div>
+
+        <div className="min-w-0 flex-1">
+          {/* Title */}
+          <h4 className="text-[15px] font-medium leading-snug text-neutral-100">
+            {node.pinned && <span className="mr-1 text-accent">★</span>}
+            {display.title}
+          </h4>
+
+          {/* Body */}
+          {display.body && (
+            <div className="mt-2 text-[13px] leading-relaxed text-neutral-300">
+              <p className="whitespace-pre-line break-words">
+                {expanded ? display.body : collapsedBody}
+              </p>
+              {hasMore && (
+                <button
+                  onClick={() => setExpanded((v) => !v)}
+                  className="mt-1 text-[11px] font-medium text-accent hover:underline"
+                >
+                  {expanded ? 'Show less' : 'Read more'}
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Footer */}
+          <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-neutral-500">
+            {display.subtitle && (
+              <span className="font-medium text-neutral-400">{display.subtitle}</span>
+            )}
+            <span>·</span>
             <span>{formatDistanceToNow(new Date(node.created_at), { addSuffix: true })}</span>
-            {node.source_app && <span>· {node.source_app}</span>}
-            {node.node_type && <span>· {node.node_type}</span>}
+            {node.node_type && (
+              <>
+                <span>·</span>
+                <span>{node.node_type}</span>
+              </>
+            )}
             {node.link_source !== 'auto' && (
-              <span className="rounded border border-neutral-800 px-1 text-[9px] uppercase tracking-wider">
+              <span className="rounded border border-neutral-800 px-1.5 py-0.5 text-[9px] uppercase tracking-wider">
                 {node.link_source}
               </span>
             )}
@@ -214,6 +256,7 @@ function NodeRow({
             )}
           </div>
         </div>
+
         {node.source_url && (
           <a
             href={node.source_url}
