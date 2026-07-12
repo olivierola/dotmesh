@@ -14,13 +14,15 @@
   "scripts": {
     "lint": "echo 'no lint config yet'",
     "typecheck": "tsc --noEmit",
-    "test": "echo 'no tests yet'",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "clean": "rm -rf node_modules dist *.tsbuildinfo"
   },
   "dependencies": {
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.0"
   }
 }
